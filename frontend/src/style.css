@@ -1,48 +1,684 @@
 @import "tailwindcss";
 
-/* 自定义动画 */
-@keyframes spin-fast {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+/* ========== 自定义滚动条 ========== */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 99px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
+}
+
+/* 全局滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
+}
+
+/* ========== 动画效果 ========== */
+.tag-capsule {
+  animation: popIn 0.2s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+@keyframes popIn {
+  0% { transform: scale(0.9); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
 }
 
 .animate-spin-fast {
-  animation: spin-fast 0.6s linear infinite;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
-/* 滚动条样式 */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/* ========== 回收站/删除状态样式 ========== */
+.is-trash {
+  border: 8px dashed #fca5a5 !important;
+  background-color: #fef2f2;
+  box-sizing: border-box;
+  position: relative;
 }
 
-::-webkit-scrollbar-track {
+.is-trash::after {
+  content: "已删除";
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%) rotate(-15deg);
+  font-size: 1.5rem;
+  font-weight: 900;
+  color: #ef4444;
+  opacity: 0.3;
+  pointer-events: none;
+  z-index: 0;
+}
+.is-trash img {
+  opacity: 0.5;
+  filter: grayscale(100%);
+}
+
+.load-failed img {
+  opacity: 0.3;
+  filter: grayscale(100%);
+}
+
+.error-overlay {
+  background-color: transparent !important;
+}
+
+.trash-mode-active .is-trash::after {
+  display: none;
+}
+.trash-mode-active .is-trash img {
+  opacity: 1;
+  filter: none;
+}
+
+/* ========== 图片卡片覆盖层 ========== */
+.image-overlay {
+  background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.0) 0%, transparent 100%);
+  pointer-events: none;
+}
+.image-overlay > * {
+  pointer-events: auto;
+}
+
+.top-toolbar {
+  background-color: rgba(0,0,0,0.0);
+}
+
+.image-info {
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8),
+              -1px -1px 2px rgba(0, 0, 0, 0.8);
+}
+
+/* 标签胶囊样式 */
+.overlay-tag {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans",
+               "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji",
+               sans-serif;
+  background-color: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8),
+              -1px -1px 2px rgba(0, 0, 0, 0.8);
+  overflow-wrap: break-all;
+  max-width: 100%;
+  display: block;
+}
+
+/* ========== 搜索栏样式 ========== */
+.search-container {
+  background-color: #f1f5f9;
+  border-radius: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  min-height: 50px;
+  max-height: 120px;
+  overflow-y: auto;
+  cursor: text;
+  transition: all 0.2s;
+  border: 1px solid transparent;
+}
+.search-container:hover {
+  background-color: #f8fafc;
+}
+.search-container:focus-within {
+  background-color: white;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 2px rgba(191, 219, 254, 0.5);
+}
+
+/* ========== FAB 按钮样式 ========== */
+.fab-btn {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 1rem;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.fab-btn:hover {
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  transform: scale(1.05);
+}
+
+/* FAB 禁用斜杠 */
+.fab-slash {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.fab-slash-line {
+  width: 2.5rem;
+  height: 0.125rem;
+  background-color: #ef4444;
+  transform: rotate(45deg);
+  border-radius: 9999px;
+  box-shadow: 0 0 2px rgba(0,0,0,0.2);
+}
+
+/* FAB 徽章 */
+.fab-badge {
+  position: absolute;
+  top: -0.25rem;
+  right: -0.25rem;
+  font-size: 9px;
+  font-weight: bold;
+  padding: 0.125rem 0.375rem;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+
+/* FAB 卫星按钮 */
+.fab-satellite {
+  position: absolute;
+  width: 2rem;
+  height: 2rem;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 9999px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  z-index: 30;
+}
+.fab-satellite:hover {
+  background-color: #f1f5f9;
+}
+
+/* FAB 迷你条 */
+.fab-mini-strip {
+  position: fixed;
+  z-index: 50;
+  right: 0;
+}
+.fab-mini-strip .fab-mini-bg {
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(8px);
+  border-left: 1px solid #e2e8f0;
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+  border-radius: 1rem 0 0 1rem;
+  box-shadow: -4px 0 15px -3px rgba(0, 0, 0, 0.1);
+  padding: 0.75rem 0.5rem;
+}
+.fab-mini-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  position: relative;
+}
+.fab-mini-btn:hover {
+  transform: scale(1.1);
+}
+
+/* FAB 折叠/展开动画 */
+.fab-mini-enter-active {
+  animation: fabMiniSlideIn 0.3s ease-out;
+}
+.fab-mini-leave-active {
+  animation: fabMiniSlideOut 0.2s ease-in;
+}
+@keyframes fabMiniSlideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes fabMiniSlideOut {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+/* FAB 主按钮组动画 */
+.fab-main-enter-active {
+  animation: fabMainFadeIn 0.3s ease-out;
+}
+.fab-main-leave-active {
+  animation: fabMainFadeOut 0.2s ease-in;
+}
+@keyframes fabMainFadeIn {
+  from {
+    transform: translateX(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes fabMainFadeOut {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(20px);
+    opacity: 0;
+  }
+}
+
+/* 自定义滑块样式 */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 3px;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: #0891b2;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 0 4px rgba(8, 145, 178, 0.2);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: #0891b2;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+/* ========== 规则树面板 ========== */
+#rules-tree-scroll-wrapper {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  margin-top: 20px;
+  padding-left: 20px;
+}
+
+#rules-tree-content {
+  overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+#rules-tree-content::-webkit-scrollbar {
+  display: none;
+}
+
+/* 自定义滚动条容器 */
+.custom-scrollbar-v,
+.custom-scrollbar-h {
+  position: absolute;
+  z-index: 10;
+  touch-action: none;
+}
+
+.custom-scrollbar-v {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 20px;
+}
+
+.custom-scrollbar-h {
+  top: -20px;
+  left: 20px;
+  right: 0;
+  height: 20px;
+}
+
+.scrollbar-track {
+  position: absolute;
+  background: #e2e8f0;
+  border-radius: 2px;
+}
+
+.custom-scrollbar-v .scrollbar-track {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+}
+
+.custom-scrollbar-h .scrollbar-track {
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 4px;
+}
+
+.scrollbar-thumb {
+  position: absolute;
+  background-color: #64748b;
+  border-radius: 10px;
+  box-shadow: 0 0 4px rgba(0,0,0,0.25);
+  cursor: grab;
+  touch-action: none;
+  z-index: 1;
+}
+
+.scrollbar-thumb:hover {
+  background-color: #475569;
+  box-shadow: 0 0 6px rgba(0,0,0,0.35);
+}
+
+.scrollbar-thumb:active,
+.scrollbar-thumb.dragging {
+  background-color: #334155;
+  cursor: grabbing;
+}
+
+.custom-scrollbar-v .scrollbar-thumb {
+  left: 5px;
+  right: 5px;
+  min-height: 30px;
+}
+
+.custom-scrollbar-h .scrollbar-thumb {
+  top: 5px;
+  bottom: 5px;
+  min-width: 30px;
+}
+
+.scrollbar-corner {
+  position: absolute;
+  top: -20px;
+  left: 0;
+  width: 20px;
+  height: 20px;
   background: #f1f5f9;
+}
+
+/* ========== 拖拽放置区样式 ========== */
+.drop-gap {
+  height: 4px;
+  margin: 2px 0;
   border-radius: 4px;
+  background-color: transparent;
+  transition: all 0.15s ease-out;
+  position: relative;
 }
 
-::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 4px;
+.drop-gap.drag-over {
+  height: 24px;
+  background-color: #dbeafe;
+  border: 2px dashed #3b82f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+.drop-gap.drag-over::after {
+  content: "放置到此处";
+  font-size: 10px;
+  color: #3b82f6;
+  font-weight: bold;
 }
 
-/* Emoji 字体 */
+.root-drop-zone {
+  min-height: 28px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  border: 2px dashed #d1d5db;
+  background-color: #f9fafb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease-out;
+  cursor: pointer;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.root-drop-zone:hover {
+  border-color: #9ca3af;
+  background-color: #f3f4f6;
+}
+
+.root-drop-zone.drag-over {
+  min-height: 40px;
+  border-color: #10b981;
+  background-color: #d1fae5;
+  border-style: solid;
+  color: #059669;
+  font-weight: bold;
+}
+
+/* 拖拽中的组节点样式 */
+.group-node.dragging {
+  opacity: 0.4;
+  border: 2px dashed #94a3b8 !important;
+  background-color: #f1f5f9;
+}
+
+.group-node.drop-target-child {
+  background-color: #eff6ff;
+  box-shadow: inset 0 0 0 2px #3b82f6;
+  border-radius: 8px;
+}
+
+/* ========== Emoji 字体 ========== */
 .emoji-font {
   font-family: "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
 }
 
-/* 基础样式重置 */
+/* ========== 批量编辑模式样式 ========== */
+.group-node.ring-2 {
+  border-radius: 6px;
+  margin: 2px 0;
+}
+
+.group-header.batch-mode {
+  transition: background-color 0.15s ease;
+}
+
+.group-header.batch-mode:hover {
+  background-color: rgba(59, 130, 246, 0.1);
+}
+
+.group-header.batch-mode .group-name-text,
+.group-header.batch-mode i[data-lucide] {
+  user-select: none;
+  pointer-events: none;
+}
+
+.group-header.batch-mode .batch-checkbox-wrapper {
+  pointer-events: none;
+}
+
+.group-header.batch-mode input[type="checkbox"] {
+  pointer-events: auto;
+  position: relative;
+  z-index: 10;
+  cursor: grab;
+}
+
+.group-header.batch-mode input[type="checkbox"]:active {
+  cursor: grabbing;
+}
+
+.group-header.batch-mode button {
+  pointer-events: auto;
+}
+
+.batch-checkbox-wrapper {
+  flex-shrink: 0;
+  border-radius: 4px;
+  transition: background-color 0.15s ease;
+  cursor: grab;
+}
+
+.batch-checkbox-wrapper:active {
+  cursor: grabbing;
+}
+
+.batch-checkbox-wrapper:hover {
+  background-color: rgba(59, 130, 246, 0.15);
+}
+
+/* 拖拽时禁止文本选择 */
+.is-dragging * {
+  user-select: none !important;
+}
+
+.is-dragging .group-node.ring-2 {
+  opacity: 0.6;
+  background-color: #dbeafe;
+}
+
+/* ========== noUiSlider 自定义样式 (标签数量筛选) ========== */
+#tag-slider {
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 4px;
+  border: none;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+}
+
+#tag-slider .noUi-connect {
+  background: linear-gradient(to right, #06b6d4, #0891b2);
+  border-radius: 4px;
+}
+
+#tag-slider .noUi-handle {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid #06b6d4;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  cursor: grab;
+  top: -5px;
+  right: -9px;
+}
+
+#tag-slider .noUi-handle:hover {
+  border-color: #0891b2;
+  box-shadow: 0 2px 8px rgba(6, 182, 212, 0.4);
+}
+
+#tag-slider .noUi-handle:active {
+  cursor: grabbing;
+  border-color: #0e7490;
+  transform: scale(1.1);
+}
+
+#tag-slider .noUi-handle::before,
+#tag-slider .noUi-handle::after {
+  display: none;
+}
+
+#tag-slider .noUi-handle:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.3);
+}
+
+/* 标签数量面板过渡动画 */
+#tag-count-panel {
+  animation: slideIn 0.2s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ========== Toast 通知样式 ========== */
+.toast-container {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  z-index: 50;
+}
+
+.toast-item {
+  animation: toastSlideIn 0.3s ease-out;
+}
+
+@keyframes toastSlideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.toast-item.leaving {
+  animation: toastSlideOut 0.3s ease-in forwards;
+}
+
+@keyframes toastSlideOut {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+/* ========== 基础样式重置 ========== */
 body {
   margin: 0;
   min-height: 100vh;
+  background-color: #f8fafc;
 }
 
 #app {

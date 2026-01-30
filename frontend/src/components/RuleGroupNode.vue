@@ -1,13 +1,15 @@
 <script setup lang="ts">
 /**
  * RuleGroupNode 组件 - 规则组节点（递归）
+ * 支持拖拽排序、批量编辑、启用/禁用、搜索高亮
  */
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import {
   Folder, Tag, ChevronDown, ChevronRight,
-  FolderPlus, Plus, Trash2
+  FolderPlus, Plus, Trash2, GripVertical,
+  Power, PowerOff, CheckSquare, Square, X
 } from 'lucide-vue-next'
-import type { RuleGroup } from '@/types'
+import type { RuleGroup, RuleKeyword } from '@/types'
 
 // Props
 const props = defineProps<{
@@ -18,6 +20,10 @@ const props = defineProps<{
   newGroupName: string
   newKeyword: string
   depth?: number
+  draggingId?: number | null
+  batchEditMode?: boolean
+  selectedGroupIds?: Set<number>
+  searchText?: string
 }>()
 
 // Emits
@@ -26,37 +32,195 @@ const emit = defineEmits<{
   'startAddGroup': [parentId: number]
   'startAddKeyword': [groupId: number]
   'deleteGroup': [group: RuleGroup]
+  'deleteKeyword': [keywordId: number]
+  'toggleEnabled': [group: RuleGroup]
+  'toggleKeywordEnabled': [keyword: RuleKeyword]
+  'toggleSelection': [groupId: number]
   'confirmAddGroup': []
   'confirmAddKeyword': []
   'cancelAdd': []
   'update:newGroupName': [value: string]
   'update:newKeyword': [value: string]
+  'dragStart': [groupId: number]
+  'dragEnd': []
+  'dropOnGroup': [targetGroupId: number]
 }>()
+
+// 拖拽状态
+const isDragOver = ref(false)
 
 // 计算属性
 const isExpanded = computed(() => props.expandedIds.has(props.group.id))
 const hasContent = computed(() =>
   props.group.children.length > 0 || props.group.keywords.length > 0
 )
+const isDragging = computed(() => props.draggingId === props.group.id)
+const isValidDropTarget = computed(() =>
+  props.draggingId !== null && props.draggingId !== props.group.id
+)
+const isSelected = computed(() => props.selectedGroupIds?.has(props.group.id) ?? false)
+const isDisabled = computed(() => !props.group.enabled)
+const isMatch = computed(() => props.group.isMatch ?? false)
+const isConflict = computed(() => props.group.isConflict ?? false)
+
+// 高亮搜索文本
+function highlightText(text: string): string {
+  const search = props.searchText?.trim().toLowerCase()
+  if (!search) return text
+  const regex = new RegExp(`(${search})`, 'gi')
+  return text.replace(regex, '<mark class="bg-yellow-200 px-0.5 rounded">$1</mark>')
+}
+
+// 检查关键词是否匹配搜索
+function isKeywordMatch(keyword: string): boolean {
+  const search = props.searchText?.trim().toLowerCase()
+  if (!search) return false
+  return keyword.toLowerCase().includes(search)
+}
+
+// 拖拽事件处理
+function handleDragStart(e: DragEvent) {
+  e.stopPropagation()
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', props.group.id.toString())
+  }
+  emit('dragStart', props.group.id)
+}
+
+function handleDragEnd(e: DragEvent) {
+  e.stopPropagation()
+  emit('dragEnd')
+}
+
+function handleDragOver(e: DragEvent) {
+  if (!isValidDropTarget.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'move'
+  }
+  isDragOver.value = true
+}
+
+function handleDragLeave(e: DragEvent) {
+  e.stopPropagation()
+  isDragOver.value = false
+}
+
+function handleDrop(e: DragEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  isDragOver.value = false
+  if (isValidDropTarget.value) {
+    emit('dropOnGroup', props.group.id)
+  }
+}
+
+// 点击复选框
+function handleCheckboxClick(e: Event) {
+  e.stopPropagation()
+  emit('toggleSelection', props.group.id)
+}
+
+// 点击启用/禁用按钮
+function handleToggleEnabled(e: Event) {
+  e.stopPropagation()
+  emit('toggleEnabled', props.group)
+}
 </script>
 
 <template>
-  <div class="group-node">
+  <div
+    class="group-node"
+    :class="{
+      'opacity-50': isDragging,
+      'ring-2 ring-red-400': isConflict
+    }"
+    :data-match="isMatch || undefined"
+  >
     <!-- 组头部 -->
     <div
-      class="flex items-center justify-between p-2 rounded hover:bg-slate-100 cursor-pointer group"
+      :class="[
+        'group-header flex items-center justify-between p-2 rounded cursor-pointer group transition-colors',
+        isDragOver && isValidDropTarget ? 'bg-blue-100 ring-2 ring-blue-400' : '',
+        isMatch ? 'bg-yellow-50 hover:bg-yellow-100' : '',
+        isConflict ? 'bg-red-50 hover:bg-red-100' : '',
+        isDisabled ? 'opacity-60' : '',
+        !isDragOver && !isMatch && !isConflict ? 'hover:bg-slate-100' : ''
+      ]"
+      draggable="true"
       @click="emit('toggleExpand', group.id)"
+      @dragstart="handleDragStart"
+      @dragend="handleDragEnd"
+      @dragover="handleDragOver"
+      @dragleave="handleDragLeave"
+      @drop="handleDrop"
     >
       <div class="flex items-center gap-2 min-w-0">
+        <!-- 批量编辑复选框 -->
+        <button
+          v-if="batchEditMode"
+          class="flex-shrink-0 p-0.5 text-purple-500 hover:text-purple-700"
+          @click="handleCheckboxClick"
+        >
+          <component :is="isSelected ? CheckSquare : Square" class="w-4 h-4" />
+        </button>
+
+        <!-- 拖拽手柄 -->
+        <GripVertical
+          v-if="!batchEditMode"
+          class="w-4 h-4 text-slate-300 flex-shrink-0 cursor-grab active:cursor-grabbing"
+        />
+
+        <!-- 展开/折叠图标 -->
         <component
           :is="hasContent ? (isExpanded ? ChevronDown : ChevronRight) : 'span'"
           :class="hasContent ? 'w-4 h-4 text-slate-400 flex-shrink-0' : 'w-4'"
         />
-        <Folder class="w-4 h-4 text-amber-500 flex-shrink-0" />
-        <span class="text-sm font-medium text-slate-700 truncate">{{ group.name }}</span>
+
+        <!-- 文件夹图标 -->
+        <Folder
+          :class="[
+            'w-4 h-4 flex-shrink-0',
+            isConflict ? 'text-red-500' : isDisabled ? 'text-slate-400' : 'text-amber-500'
+          ]"
+        />
+
+        <!-- 组名 -->
+        <span
+          :class="[
+            'text-sm font-medium truncate',
+            isDisabled ? 'text-slate-400 line-through' : 'text-slate-700'
+          ]"
+          v-html="highlightText(group.name)"
+        />
+
+        <!-- 关键词数量 -->
         <span class="text-xs text-slate-400 flex-shrink-0">({{ group.keywords.length }})</span>
+
+        <!-- 禁用标记 -->
+        <span
+          v-if="isDisabled"
+          class="text-xs text-orange-500 flex-shrink-0"
+        >
+          [禁用]
+        </span>
       </div>
+
+      <!-- 操作按钮 -->
       <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+        <!-- 启用/禁用按钮 -->
+        <button
+          :class="[
+            'p-1',
+            isDisabled ? 'text-green-500 hover:text-green-700' : 'text-orange-500 hover:text-orange-700'
+          ]"
+          :title="isDisabled ? '启用' : '禁用'"
+          @click="handleToggleEnabled"
+        >
+          <component :is="isDisabled ? Power : PowerOff" class="w-4 h-4" />
+        </button>
         <button
           class="p-1 text-blue-500 hover:text-blue-700"
           title="添加子组"
@@ -87,10 +251,35 @@ const hasContent = computed(() =>
       <div
         v-for="kw in group.keywords"
         :key="kw.id"
-        class="flex items-center gap-2 py-1 px-2 text-sm text-slate-600 hover:bg-slate-50 rounded"
+        :class="[
+          'flex items-center justify-between gap-2 py-1 px-2 text-sm rounded group/kw',
+          isKeywordMatch(kw.keyword) ? 'bg-yellow-50' : 'hover:bg-slate-50',
+          !kw.enabled ? 'opacity-50' : ''
+        ]"
       >
-        <Tag class="w-3 h-3 text-green-500 flex-shrink-0" />
-        <span class="truncate">{{ kw.keyword }}</span>
+        <div class="flex items-center gap-2 min-w-0">
+          <Tag :class="['w-3 h-3 flex-shrink-0', kw.enabled ? 'text-green-500' : 'text-slate-400']" />
+          <span
+            :class="['truncate', kw.enabled ? 'text-slate-600' : 'text-slate-400 line-through']"
+            v-html="highlightText(kw.keyword)"
+          />
+        </div>
+        <div class="flex items-center gap-1 opacity-0 group-hover/kw:opacity-100 transition-opacity flex-shrink-0">
+          <button
+            :class="['p-0.5', kw.enabled ? 'text-green-500 hover:text-green-700' : 'text-slate-400 hover:text-slate-600']"
+            :title="kw.enabled ? '禁用关键词' : '启用关键词'"
+            @click="emit('toggleKeywordEnabled', kw)"
+          >
+            <component :is="kw.enabled ? Power : PowerOff" class="w-3 h-3" />
+          </button>
+          <button
+            class="p-0.5 text-red-400 hover:text-red-600"
+            title="删除关键词"
+            @click="emit('deleteKeyword', kw.id)"
+          >
+            <X class="w-3 h-3" />
+          </button>
+        </div>
       </div>
 
       <!-- 添加关键词输入框 -->
@@ -119,15 +308,25 @@ const hasContent = computed(() =>
         :new-group-name="newGroupName"
         :new-keyword="newKeyword"
         :depth="(depth || 0) + 1"
+        :dragging-id="draggingId"
+        :batch-edit-mode="batchEditMode"
+        :selected-group-ids="selectedGroupIds"
+        :search-text="searchText"
         @toggle-expand="emit('toggleExpand', $event)"
         @start-add-group="emit('startAddGroup', $event)"
         @start-add-keyword="emit('startAddKeyword', $event)"
         @delete-group="emit('deleteGroup', $event)"
+        @delete-keyword="emit('deleteKeyword', $event)"
+        @toggle-enabled="emit('toggleEnabled', $event)"
+        @toggle-selection="emit('toggleSelection', $event)"
         @confirm-add-group="emit('confirmAddGroup')"
         @confirm-add-keyword="emit('confirmAddKeyword')"
         @cancel-add="emit('cancelAdd')"
         @update:new-group-name="emit('update:newGroupName', $event)"
         @update:new-keyword="emit('update:newKeyword', $event)"
+        @drag-start="emit('dragStart', $event)"
+        @drag-end="emit('dragEnd')"
+        @drop-on-group="emit('dropOnGroup', $event)"
       />
 
       <!-- 添加子组输入框 -->

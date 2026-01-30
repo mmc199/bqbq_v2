@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * ImageEditModal 组件 - 图片编辑模态框
- * 编辑图片标签
+ * 编辑图片标签，支持乐观更新和冲突重试
  */
 import { ref, watch, computed } from 'vue'
 import { X, Save, Loader2 } from 'lucide-vue-next'
@@ -9,6 +9,7 @@ import TagInput from './TagInput.vue'
 import { useImageApi } from '@/composables/useApi'
 import { useGlobalStore } from '@/stores/useGlobalStore'
 import { useToast } from '@/composables/useToast'
+import { useOptimisticUpdate } from '@/composables/useOptimisticUpdate'
 import type { MemeImage } from '@/types'
 
 // Props
@@ -22,19 +23,23 @@ const props = defineProps<{
 const emit = defineEmits<{
   'close': []
   'saved': [image: MemeImage]
+  'refresh': []  // 新增：请求刷新数据
 }>()
 
 const imageApi = useImageApi()
 const globalStore = useGlobalStore()
 const toast = useToast()
+const { executeWithRetry } = useOptimisticUpdate()
 
 // 状态
 const isSaving = ref(false)
 const tags = ref<{ text: string; exclude: boolean; synonym: boolean; synonymWords: string[] | null }[]>([])
+const originalImage = ref<MemeImage | null>(null)
 
 // 监听图片变化，初始化标签
 watch(() => props.image, (newImage) => {
   if (newImage) {
+    originalImage.value = { ...newImage }
     const tagStrings = newImage.tags ? newImage.tags.split(' ').filter(t => t.trim()) : []
     tags.value = tagStrings.map(t => ({
       text: t,
@@ -44,6 +49,7 @@ watch(() => props.image, (newImage) => {
     }))
   } else {
     tags.value = []
+    originalImage.value = null
   }
 }, { immediate: true })
 
@@ -60,24 +66,31 @@ const hasChanges = computed(() => {
   return !originalTags.every((t, i) => t === currentTags[i])
 })
 
-// 保存标签
+// 保存标签（带冲突重试）
 async function save() {
   if (!props.image || !hasChanges.value) return
 
   isSaving.value = true
-
   const tagStrings = tags.value.map(t => t.text)
-  const result = await imageApi.updateImageTags(
-    props.image.id,
-    tagStrings,
-    globalStore.clientId,
-    globalStore.rulesVersion
+
+  // 使用冲突重试机制
+  const result = await executeWithRetry(
+    (clientId, baseVersion) => imageApi.updateImageTags(
+      props.image!.id,
+      tagStrings,
+      clientId,
+      baseVersion
+    ),
+    // 冲突时的回调：可以在这里刷新数据
+    async () => {
+      // 发出刷新请求，让父组件重新获取最新数据
+      emit('refresh')
+    }
   )
 
   isSaving.value = false
 
   if (result.success && result.data) {
-    globalStore.updateRulesVersion(result.data.new_version)
     toast.success('标签已保存')
 
     // 更新图片对象

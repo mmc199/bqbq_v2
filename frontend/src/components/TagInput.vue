@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
  * TagInput 组件 - 标签胶囊输入
- * 支持：空格/回车添加标签、排除标签(-)、同义词组(,)、点击编辑、删除
+ * 支持：空格/回车添加标签、排除标签(-)、同义词组(,)、点击编辑、删除、标签建议
  */
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { X } from 'lucide-vue-next'
 
 // 标签类型
@@ -13,6 +13,9 @@ interface Tag {
   synonym: boolean
   synonymWords: string[] | null
 }
+
+// 扩展名建议列表
+const EXTENSION_SUGGESTIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']
 
 // Props
 const props = withDefaults(defineProps<{
@@ -39,13 +42,54 @@ const emit = defineEmits<{
 
 // 内部状态
 const inputRef = ref<HTMLInputElement | null>(null)
+const containerRef = ref<HTMLDivElement | null>(null)
 const inputValue = ref('')
 const tags = ref<Tag[]>([...props.modelValue])
+
+// 建议列表状态
+const showSuggestions = ref(false)
+const selectedSuggestionIndex = ref(-1)
+
+// 过滤后的建议列表
+const filteredSuggestions = computed(() => {
+  const rawQuery = inputValue.value.replace(/^-/, '').trim()
+  const query = rawQuery.toLowerCase()
+  if (!query) return []
+
+  // 扩展名建议：当输入以 . 开头时
+  if (query.startsWith('.')) {
+    const existingTags = new Set(tags.value.map(t => t.text.toLowerCase()))
+    return EXTENSION_SUGGESTIONS
+      .filter(ext => ext.startsWith(query) && !existingTags.has(ext))
+      .slice(0, 8)
+  }
+
+  // 普通标签建议
+  if (!props.suggestions.length) return []
+
+  // 获取已有标签文本
+  const existingTags = new Set(tags.value.map(t => t.text.toLowerCase()))
+
+  // 过滤并排序建议
+  return props.suggestions
+    .filter(s => {
+      const lower = s.toLowerCase()
+      return lower.includes(query) && !existingTags.has(lower)
+    })
+    .slice(0, 8) // 最多显示8个建议
+})
 
 // 监听外部值变化
 watch(() => props.modelValue, (newVal) => {
   tags.value = [...newVal]
 }, { deep: true })
+
+// 监听输入变化，显示/隐藏建议
+watch(inputValue, (val) => {
+  const query = val.replace(/^-/, '').trim()
+  showSuggestions.value = query.length > 0 && filteredSuggestions.value.length > 0
+  selectedSuggestionIndex.value = -1
+})
 
 // 获取标签样式
 function getTagStyle(tag: Tag): string {
@@ -161,7 +205,41 @@ function handleInput() {
 
 // 处理键盘事件
 function handleKeydown(e: KeyboardEvent) {
+  // 建议列表导航
+  if (showSuggestions.value && filteredSuggestions.value.length > 0) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      selectedSuggestionIndex.value = Math.min(
+        selectedSuggestionIndex.value + 1,
+        filteredSuggestions.value.length - 1
+      )
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      selectedSuggestionIndex.value = Math.max(selectedSuggestionIndex.value - 1, -1)
+      return
+    }
+    if (e.key === 'Tab' && selectedSuggestionIndex.value >= 0) {
+      e.preventDefault()
+      selectSuggestion(filteredSuggestions.value[selectedSuggestionIndex.value])
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      showSuggestions.value = false
+      return
+    }
+  }
+
   if (e.key === 'Enter') {
+    // 如果有选中的建议，使用建议
+    if (showSuggestions.value && selectedSuggestionIndex.value >= 0) {
+      e.preventDefault()
+      selectSuggestion(filteredSuggestions.value[selectedSuggestionIndex.value])
+      return
+    }
+
     const val = inputValue.value.trim()
     if (val) {
       e.preventDefault()
@@ -177,9 +255,25 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+// 选择建议
+function selectSuggestion(suggestion: string) {
+  const prefix = inputValue.value.startsWith('-') ? '-' : ''
+  addTag(prefix + suggestion)
+  inputValue.value = ''
+  showSuggestions.value = false
+  selectedSuggestionIndex.value = -1
+}
+
 // 点击容器聚焦输入框
 function focusInput() {
   inputRef.value?.focus()
+}
+
+// 点击外部关闭建议列表
+function handleClickOutside(e: MouseEvent) {
+  if (containerRef.value && !containerRef.value.contains(e.target as Node)) {
+    showSuggestions.value = false
+  }
 }
 
 // 计算 placeholder
@@ -192,6 +286,11 @@ onMounted(() => {
   if (props.autoFocus) {
     requestAnimationFrame(() => inputRef.value?.focus())
   }
+  document.addEventListener('click', handleClickOutside)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
 })
 
 // 暴露方法
@@ -207,7 +306,8 @@ defineExpose({
 
 <template>
   <div
-    class="flex flex-wrap items-center gap-2 p-2 bg-white border border-slate-200 rounded-lg min-h-[44px] cursor-text focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500"
+    ref="containerRef"
+    class="relative flex flex-wrap items-center gap-2 bg-slate-100 rounded-xl px-3 py-2 min-h-[50px] max-h-[120px] overflow-y-auto cursor-text transition-colors border border-transparent hover:bg-slate-50 focus-within:bg-white focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-100 custom-scrollbar"
     @click="focusInput"
   >
     <!-- 标签胶囊 -->
@@ -215,7 +315,7 @@ defineExpose({
       v-for="(tag, index) in tags"
       :key="`${tag.text}-${index}`"
       :class="[
-        'flex items-center gap-1 px-3 py-1 rounded-full text-sm font-bold cursor-pointer select-none transition-transform active:scale-95 border',
+        'flex items-center gap-1 px-3 py-1 rounded-full text-sm font-bold cursor-pointer select-none transition-transform active:scale-95 border tag-capsule',
         getTagStyle(tag)
       ]"
       :title="getTagTitle(tag)"
@@ -237,16 +337,34 @@ defineExpose({
       ref="inputRef"
       v-model="inputValue"
       type="text"
-      :list="suggestions.length ? 'tag-suggestions' : undefined"
       :placeholder="computedPlaceholder"
       class="flex-grow min-w-[60px] bg-transparent outline-none text-slate-700 placeholder-slate-400 font-medium h-8 text-sm"
+      autocomplete="off"
       @input="handleInput"
       @keydown="handleKeydown"
+      @focus="showSuggestions = filteredSuggestions.length > 0"
     />
 
-    <!-- Datalist 建议 -->
-    <datalist v-if="suggestions.length" id="tag-suggestions">
-      <option v-for="s in suggestions" :key="s" :value="s" />
-    </datalist>
+    <!-- 建议下拉列表 -->
+    <div
+      v-if="showSuggestions && filteredSuggestions.length > 0"
+      class="absolute left-0 right-0 top-full mt-1 bg-white rounded-xl shadow-xl border border-slate-200 py-1 z-50 max-h-64 overflow-y-auto custom-scrollbar"
+    >
+      <button
+        v-for="(suggestion, index) in filteredSuggestions"
+        :key="suggestion"
+        type="button"
+        :class="[
+          'w-full px-4 py-2 text-left text-sm transition-colors',
+          index === selectedSuggestionIndex
+            ? 'bg-blue-50 text-blue-700'
+            : 'text-slate-700 hover:bg-slate-50'
+        ]"
+        @click.stop="selectSuggestion(suggestion)"
+        @mouseenter="selectedSuggestionIndex = index"
+      >
+        <span class="font-medium">{{ suggestion }}</span>
+      </button>
+    </div>
   </div>
 </template>

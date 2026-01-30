@@ -2,11 +2,44 @@
  * 全局状态管理
  */
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import type { RulesTree } from '@/types'
 
 const CLIENT_ID_KEY = 'bqbq_client_id'
 const RULES_VERSION_KEY = 'bqbq_rules_version'
+const PREFERENCES_KEY = 'bqbq_preferences'
+const TAG_CACHE_KEY = 'bqbq_tag_cache'
+const TAG_TIMESTAMP_KEY = 'bqbq_tag_timestamp'
+const TAG_CACHE_TTL = 10 * 60 * 1000 // 10 分钟缓存有效期
+
+// 用户偏好设置类型
+interface UserPreferences {
+  isExpansionEnabled: boolean
+  isHQMode: boolean
+  sortBy: string
+  fabCollapsed: boolean
+}
+
+// 默认偏好设置
+const defaultPreferences: UserPreferences = {
+  isExpansionEnabled: true,
+  isHQMode: false,
+  sortBy: 'time_desc',
+  fabCollapsed: false,
+}
+
+// 从 localStorage 加载偏好设置
+function loadPreferences(): UserPreferences {
+  try {
+    const saved = localStorage.getItem(PREFERENCES_KEY)
+    if (saved) {
+      return { ...defaultPreferences, ...JSON.parse(saved) }
+    }
+  } catch (e) {
+    console.warn('加载偏好设置失败:', e)
+  }
+  return { ...defaultPreferences }
+}
 
 // 生成客户端唯一 ID
 function generateClientId(): string {
@@ -30,6 +63,30 @@ export const useGlobalStore = defineStore('global', () => {
   // 全局加载状态
   const isLoading = ref(false)
 
+  // 用户偏好设置（持久化）
+  const preferences = ref<UserPreferences>(loadPreferences())
+
+  // 标签缓存
+  const tagCache = ref<string[]>([])
+  const tagCacheTimestamp = ref<number>(0)
+
+  // 保存偏好设置
+  function savePreferences() {
+    try {
+      localStorage.setItem(PREFERENCES_KEY, JSON.stringify(preferences.value))
+    } catch (e) {
+      console.warn('保存偏好设置失败:', e)
+    }
+  }
+
+  // 监听偏好设置变化，自动保存
+  watch(preferences, savePreferences, { deep: true })
+
+  // 更新单个偏好设置
+  function updatePreference<K extends keyof UserPreferences>(key: K, value: UserPreferences[K]) {
+    preferences.value[key] = value
+  }
+
   // 保存客户端 ID
   function saveClientId() {
     localStorage.setItem(CLIENT_ID_KEY, clientId.value)
@@ -47,9 +104,53 @@ export const useGlobalStore = defineStore('global', () => {
     updateRulesVersion(tree.version)
   }
 
+  // 标签缓存相关方法
+  function loadTagCache(): string[] | null {
+    try {
+      const cached = localStorage.getItem(TAG_CACHE_KEY)
+      const timestamp = localStorage.getItem(TAG_TIMESTAMP_KEY)
+
+      if (cached && timestamp) {
+        const ts = parseInt(timestamp, 10)
+        if (Date.now() - ts < TAG_CACHE_TTL) {
+          tagCache.value = JSON.parse(cached)
+          tagCacheTimestamp.value = ts
+          return tagCache.value
+        }
+      }
+    } catch (e) {
+      console.warn('加载标签缓存失败:', e)
+    }
+    return null
+  }
+
+  function saveTagCache(tags: string[]) {
+    try {
+      const now = Date.now()
+      localStorage.setItem(TAG_CACHE_KEY, JSON.stringify(tags))
+      localStorage.setItem(TAG_TIMESTAMP_KEY, now.toString())
+      tagCache.value = tags
+      tagCacheTimestamp.value = now
+    } catch (e) {
+      console.warn('保存标签缓存失败:', e)
+    }
+  }
+
+  function clearTagCache() {
+    localStorage.removeItem(TAG_CACHE_KEY)
+    localStorage.removeItem(TAG_TIMESTAMP_KEY)
+    tagCache.value = []
+    tagCacheTimestamp.value = 0
+  }
+
+  function isTagCacheValid(): boolean {
+    return tagCacheTimestamp.value > 0 && Date.now() - tagCacheTimestamp.value < TAG_CACHE_TTL
+  }
+
   // 初始化
   function init() {
     saveClientId()
+    loadTagCache()
   }
 
   // 计算属性：是否有规则树
@@ -61,9 +162,16 @@ export const useGlobalStore = defineStore('global', () => {
     rulesTree,
     isLoading,
     hasRulesTree,
+    preferences,
+    tagCache,
     saveClientId,
     updateRulesVersion,
     setRulesTree,
+    updatePreference,
+    loadTagCache,
+    saveTagCache,
+    clearTagCache,
+    isTagCacheValid,
     init,
   }
 })

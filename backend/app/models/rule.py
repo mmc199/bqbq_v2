@@ -9,6 +9,7 @@ class KeywordResponse(BaseModel):
     id: int
     keyword: str
     group_id: int
+    enabled: bool = True
 
 
 class GroupBase(BaseModel):
@@ -28,6 +29,7 @@ class GroupResponse(BaseModel):
     """规则组响应（含子节点）"""
     id: int
     name: str
+    enabled: bool = True
     keywords: list[KeywordResponse] = Field(default_factory=list)
     children: list["GroupResponse"] = Field(default_factory=list)
 
@@ -57,3 +59,59 @@ class CASResponse(BaseModel):
     new_version: int
     conflicts: int = 0
     message: str = ""
+
+
+class GroupUpdate(BaseModel):
+    """更新规则组请求"""
+    name: str | None = None
+    parent_id: int | None = None
+    enabled: bool | None = None
+    client_id: str
+    base_version: int
+
+
+class GroupToggle(BaseModel):
+    """切换规则组启用状态"""
+    enabled: bool
+    client_id: str
+    base_version: int
+
+
+class GroupBatchRequest(BaseModel):
+    """批量操作规则组请求"""
+    group_ids: list[int]
+    action: str  # "delete", "enable", "disable", "move"
+    target_parent_id: int | None = None  # 用于 move 操作
+    client_id: str
+    base_version: int
+
+
+class HierarchyAddRequest(BaseModel):
+    """添加层级关系请求"""
+    child_id: int
+    parent_id: int
+    client_id: str
+    base_version: int
+
+
+class HierarchyRemoveRequest(BaseModel):
+    """删除层级关系请求"""
+    child_id: int
+    parent_id: int
+    client_id: str
+    base_version: int
+
+
+class HierarchyBatchMoveRequest(BaseModel):
+    """批量移动层级请求"""
+    group_ids: list[int]
+    new_parent_id: int | None = None
+    client_id: str
+    base_version: int
+
+
+class KeywordToggle(BaseModel):
+    """切换关键词启用状态"""
+    enabled: bool
+    client_id: str
+    base_version: int

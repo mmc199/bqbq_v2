@@ -34,6 +34,49 @@ export interface SearchRequest {
   exclude_tags: string[]
   page?: number
   page_size?: number
+  // 新增参数 - 与旧项目一致
+  min_tags?: number | null
+  max_tags?: number | null
+  sort_by?: string
+  extensions?: string[]
+  exclude_extensions?: string[]
+  expand?: boolean  // 是否启用关键词膨胀
+}
+
+// 高级搜索请求（兼容旧项目二维数组格式）
+export interface AdvancedSearchRequest {
+  // 二维数组：每个子数组是一个标签膨胀后的关键词列表（子数组内OR，子数组间AND）
+  keywords: string[][]
+  // 二维数组：每个子数组是一个排除标签膨胀后的关键词列表
+  excludes: string[][]
+  // 三维数组：交集排除
+  excludes_and: string[][][]
+  // 包含的扩展名列表
+  extensions: string[]
+  // 排除的扩展名列表
+  exclude_extensions: string[]
+  // 分页
+  offset: number
+  limit: number
+  // 排序
+  sort_by: string
+  // 标签数量筛选
+  min_tags: number
+  max_tags: number
+}
+
+export interface AdvancedSearchResponse {
+  total: number
+  results: {
+    id: number
+    md5: string
+    filename: string
+    tags: string[]
+    width: number
+    height: number
+    file_size: number
+    is_trash: boolean
+  }[]
 }
 
 export interface SearchResponse {
@@ -49,13 +92,19 @@ export interface RuleKeyword {
   id: number
   keyword: string
   group_id: number
+  enabled: boolean
 }
 
 export interface RuleGroup {
   id: number
   name: string
+  enabled: boolean
   keywords: RuleKeyword[]
   children: RuleGroup[]
+  // 前端扩展字段（用于搜索和冲突检测）
+  isMatch?: boolean
+  isConflict?: boolean
+  conflictReason?: string
 }
 
 export interface RulesTree {
