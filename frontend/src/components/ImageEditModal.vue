@@ -7,7 +7,6 @@ import { ref, watch, computed } from 'vue'
 import { X, Save, Loader2 } from 'lucide-vue-next'
 import TagInput from './TagInput.vue'
 import { useImageApi } from '@/composables/useApi'
-import { useGlobalStore } from '@/stores/useGlobalStore'
 import { useToast } from '@/composables/useToast'
 import { useOptimisticUpdate } from '@/composables/useOptimisticUpdate'
 import type { MemeImage } from '@/types'
@@ -27,7 +26,6 @@ const emit = defineEmits<{
 }>()
 
 const imageApi = useImageApi()
-const globalStore = useGlobalStore()
 const toast = useToast()
 const { executeWithRetry } = useOptimisticUpdate()
 
@@ -125,74 +123,87 @@ function handleKeydown(e: KeyboardEvent) {
 
 <template>
   <Teleport to="body">
-    <!-- 遮罩 -->
+    <!-- 遮罩 - 一比一复刻旧项目 -->
     <div
       v-if="visible && image"
-      class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
+      class="modal-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
       @click.self="close"
       @keydown="handleKeydown"
     >
-      <!-- 模态框 -->
-      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+      <!-- 模态框 - 双栏布局 -->
+      <div class="modal-content bg-white rounded-[20px] shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
         <!-- 头部 -->
-        <div class="flex items-center justify-between p-4 border-b flex-shrink-0">
-          <h2 class="text-lg font-bold text-slate-800">编辑图片</h2>
+        <div class="modal-header flex items-center justify-between px-6 py-5 border-b border-slate-200 flex-shrink-0">
+          <h3 class="text-lg font-semibold text-slate-800">编辑图片</h3>
           <button
-            class="p-1 text-slate-400 hover:text-slate-600 transition"
+            class="modal-close w-9 h-9 rounded-[10px] bg-slate-100 text-slate-500 flex items-center justify-center hover:bg-red-100 hover:text-red-600 transition-all"
             :disabled="isSaving"
             @click="close"
           >
-            <X class="w-6 h-6" />
+            <X class="w-5 h-5" />
           </button>
         </div>
 
-        <!-- 内容区 -->
-        <div class="flex-1 overflow-auto p-4">
-          <div class="flex flex-col md:flex-row gap-6">
+        <!-- 内容区 - 双栏布局 -->
+        <div class="modal-body flex-1 overflow-auto p-6">
+          <div class="edit-modal-content grid grid-cols-1 md:grid-cols-2 gap-6">
             <!-- 图片预览 -->
-            <div class="md:w-1/2">
-              <div class="bg-slate-100 rounded-xl overflow-hidden aspect-square flex items-center justify-center">
-                <img
-                  :src="imageSrc"
-                  :alt="image.filename"
-                  class="max-w-full max-h-full object-contain"
-                />
-              </div>
-              <!-- 图片信息 -->
-              <div class="mt-3 text-sm text-slate-500 space-y-1">
-                <p><span class="font-medium">文件名:</span> {{ image.filename }}</p>
-                <p v-if="image.width && image.height">
-                  <span class="font-medium">尺寸:</span> {{ image.width }} × {{ image.height }}
-                </p>
-                <p v-if="image.file_size">
-                  <span class="font-medium">大小:</span> {{ (image.file_size / 1024 / 1024).toFixed(2) }} MB
-                </p>
-              </div>
+            <div class="edit-preview aspect-square rounded-xl overflow-hidden bg-slate-800 flex items-center justify-center">
+              <img
+                :src="imageSrc"
+                :alt="image.filename"
+                class="max-w-full max-h-full object-contain"
+              />
             </div>
 
-            <!-- 标签编辑 -->
-            <div class="md:w-1/2">
-              <label class="block text-sm font-medium text-slate-700 mb-2">
-                标签
-              </label>
-              <TagInput
-                v-model="tags"
-                placeholder="输入标签，空格分隔..."
-                theme="purple"
-                :suggestions="suggestions"
-                auto-focus
-              />
-              <p class="mt-2 text-xs text-slate-400">
-                提示: 空格或回车添加标签，点击标签可编辑，Ctrl+S 保存
-              </p>
+            <!-- 编辑表单 -->
+            <div class="edit-form flex flex-col gap-4">
+              <!-- 文件信息 -->
+              <div class="edit-form-group">
+                <label class="edit-form-label text-sm font-medium text-slate-500 mb-1.5">文件名</label>
+                <div class="text-sm text-slate-700 font-mono bg-slate-50 px-3 py-2 rounded-lg">
+                  {{ image.filename }}
+                </div>
+              </div>
+
+              <!-- 尺寸信息 -->
+              <div v-if="image.width && image.height" class="edit-form-group">
+                <label class="edit-form-label text-sm font-medium text-slate-500 mb-1.5">尺寸</label>
+                <div class="text-sm text-slate-700 bg-slate-50 px-3 py-2 rounded-lg">
+                  {{ image.width }} × {{ image.height }} px
+                </div>
+              </div>
+
+              <!-- 文件大小 -->
+              <div v-if="image.file_size" class="edit-form-group">
+                <label class="edit-form-label text-sm font-medium text-slate-500 mb-1.5">大小</label>
+                <div class="text-sm text-slate-700 bg-slate-50 px-3 py-2 rounded-lg">
+                  {{ (image.file_size / 1024).toFixed(1) }} KB
+                </div>
+              </div>
+
+              <!-- 标签编辑 -->
+              <div class="edit-form-group flex-1">
+                <label class="edit-form-label text-sm font-medium text-slate-500 mb-1.5">标签</label>
+                <TagInput
+                  v-model="tags"
+                  placeholder="输入标签，空格分隔..."
+                  theme="purple"
+                  :suggestions="suggestions"
+                  auto-focus
+                />
+                <p class="mt-2 text-xs text-slate-400">
+                  提示: 空格或回车添加标签，点击标签可编辑，Ctrl+S 保存
+                </p>
+              </div>
             </div>
           </div>
         </div>
 
         <!-- 底部操作 -->
-        <div class="flex items-center justify-end gap-3 p-4 border-t bg-slate-50 flex-shrink-0">
+        <div class="modal-footer flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-200 bg-slate-50 flex-shrink-0">
           <button
-            class="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg transition"
+            class="modal-btn secondary px-5 py-2.5 bg-slate-100 text-slate-600 rounded-[10px] hover:bg-slate-200 transition-all font-medium"
             :disabled="isSaving"
             @click="close"
           >
@@ -200,9 +211,9 @@ function handleKeydown(e: KeyboardEvent) {
           </button>
           <button
             :class="[
-              'px-4 py-2 rounded-lg transition flex items-center gap-2',
+              'modal-btn px-5 py-2.5 rounded-[10px] transition-all flex items-center gap-2 font-medium',
               hasChanges && !isSaving
-                ? 'bg-blue-500 text-white hover:bg-blue-600'
+                ? 'primary bg-blue-500 text-white hover:bg-blue-600'
                 : 'bg-slate-200 text-slate-400 cursor-not-allowed'
             ]"
             :disabled="!hasChanges || isSaving"

@@ -4,12 +4,13 @@
  * 一比一复刻旧项目的所有功能
  */
 import { ref, onMounted, computed } from 'vue'
-import { Search, RefreshCw } from 'lucide-vue-next'
+import { Search } from 'lucide-vue-next'
 import TagInput from '@/components/TagInput.vue'
 import MemeCard from '@/components/MemeCard.vue'
 import RuleTree from '@/components/RuleTree.vue'
 import UploadModal from '@/components/UploadModal.vue'
 import ImageEditModal from '@/components/ImageEditModal.vue'
+import ImagePreview from '@/components/ImagePreview.vue'
 import FloatingButtons from '@/components/FloatingButtons.vue'
 import ToastContainer from '@/components/ToastContainer.vue'
 import { useImageApi, useSystemApi } from '@/composables/useApi'
@@ -59,7 +60,16 @@ const maxTags = ref<number | null>(null)
 
 // 临时标签（批量打标）
 const tempTags = ref<string[]>([])
+const isTempTagMode = ref(false)
 const selectedImages = ref<Set<number>>(new Set())
+
+// 扩展名筛选
+const extensions = ref<string[]>([])
+const excludeExtensions = ref<string[]>([])
+
+// 图片预览
+const previewImage = ref<MemeImage | null>(null)
+const previewIndex = ref(0)
 
 // 批量编辑模式
 const isBatchMode = ref(false)
@@ -118,6 +128,8 @@ async function searchImages(resetPage = true) {
     min_tags: minTags.value,
     max_tags: maxTags.value,
     expand: isExpansionEnabled.value,
+    extensions: extensions.value.length > 0 ? extensions.value : undefined,
+    exclude_extensions: excludeExtensions.value.length > 0 ? excludeExtensions.value : undefined,
   })
 
   isLoading.value = false
@@ -373,6 +385,75 @@ function handleUpdateTempTags(tags: string[]) {
   tempTags.value = tags
 }
 
+function handleToggleTempMode(enabled: boolean) {
+  isTempTagMode.value = enabled
+  toast.info(enabled ? '批量打标模式已开启' : '批量打标模式已关闭')
+}
+
+async function handleCardTempApply(image: MemeImage) {
+  if (tempTags.value.length === 0) {
+    toast.warning('请先添加临时标签')
+    return
+  }
+
+  const currentTags = image.tags ? image.tags.split(' ').filter(t => t) : []
+  const newTags = [...new Set([...currentTags, ...tempTags.value])]
+
+  const result = await imageApi.updateImageTags(
+    image.id,
+    newTags,
+    globalStore.clientId,
+    globalStore.rulesVersion
+  )
+
+  if (result.success && result.data) {
+    globalStore.updateRulesVersion(result.data.new_version)
+    const idx = images.value.findIndex(img => img.id === image.id)
+    if (idx !== -1) {
+      const existing = images.value[idx]
+      if (existing) {
+        images.value[idx] = { ...existing, tags: newTags.join(' ') }
+      }
+    }
+    toast.success('已应用临时标签')
+  } else {
+    toast.error('批量打标失败')
+  }
+}
+
+// 更新扩展名筛选
+function handleUpdateExtensions(exts: string[], excludeExts: string[]) {
+  extensions.value = exts
+  excludeExtensions.value = excludeExts
+  searchImages(true)
+}
+
+// 图片预览相关函数
+function openPreview(image: MemeImage) {
+  previewImage.value = image
+  previewIndex.value = images.value.findIndex(img => img.id === image.id)
+}
+
+function closePreview() {
+  previewImage.value = null
+}
+
+function navigatePreview(direction: 'prev' | 'next') {
+  if (direction === 'prev' && previewIndex.value > 0) {
+    previewIndex.value--
+    const next = images.value[previewIndex.value]
+    if (next) {
+      previewImage.value = next
+    }
+  } else if (direction === 'next' && previewIndex.value < images.value.length - 1) {
+    previewIndex.value++
+    const next = images.value[previewIndex.value]
+    if (next) {
+      previewImage.value = next
+    }
+  }
+}
+
 // 应用临时标签到选中图片
 async function handleApplyTempTags() {
   if (tempTags.value.length === 0) {
@@ -509,9 +590,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col overflow-hidden bg-slate-50" :class="{ 'trash-mode-active': isTrashMode }">
-    <!-- 顶部搜索栏 -->
-    <header class="min-h-16 bg-white/90 border-b border-slate-200 flex items-center px-4 z-30 shrink-0 gap-2 shadow-sm">
+  <div class="min-h-screen bg-slate-50" :class="{ 'trash-mode-active': isTrashMode }">
+    <!-- 顶部搜索栏 - 一比一复刻旧项目 -->
+    <header class="search-container sticky top-0 z-30 flex items-start gap-3 px-4 pt-4 pb-6"
+            style="background: linear-gradient(to bottom, #f8fafc 0%, #f8fafc 70%, transparent 100%);">
       <!-- 搜索容器 -->
       <TagInput
         v-model="searchTags"
@@ -523,23 +605,32 @@ onMounted(() => {
         @submit="handleSearchSubmit"
       />
 
-      <!-- 统计信息 -->
-      <div class="text-sm text-slate-500 whitespace-nowrap flex items-center gap-2">
-        <span>{{ totalImages }} 张</span>
-        <span v-if="isTrashMode" class="text-red-500">回收站</span>
-        <!-- 膨胀统计徽章 -->
-        <span
-          v-if="isExpansionEnabled && expandedTagsCount > originalTagsCount"
-          class="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold"
-          :title="`${originalTagsCount} 个标签膨胀为 ${expandedTagsCount} 个关键词`"
-        >
-          膨胀 {{ originalTagsCount }}→{{ expandedTagsCount }}
-        </span>
-        <span v-else-if="isExpansionEnabled" class="text-emerald-600">膨胀</span>
-        <span v-if="isHQMode" class="text-blue-600">HQ</span>
-        <span v-if="sortBy !== 'time_desc'" class="text-purple-600">排序</span>
-      </div>
+      <!-- 搜索按钮 -->
+      <button
+        class="search-btn px-7 py-3.5 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-xl transition-all duration-200 flex items-center gap-2 whitespace-nowrap shadow-md hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0"
+        @click="handleSearchSubmit"
+      >
+        <Search class="w-5 h-5" />
+        搜索
+      </button>
     </header>
+
+    <!-- 统计信息栏 -->
+    <div class="px-4 pb-2 flex items-center gap-2 text-sm text-slate-500">
+      <span>{{ totalImages }} 张</span>
+      <span v-if="isTrashMode" class="text-red-500 font-medium">回收站</span>
+      <!-- 膨胀统计徽章 -->
+      <span
+        v-if="isExpansionEnabled && expandedTagsCount > originalTagsCount"
+        class="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold"
+        :title="`${originalTagsCount} 个标签膨胀为 ${expandedTagsCount} 个关键词`"
+      >
+        膨胀 {{ originalTagsCount }}→{{ expandedTagsCount }}
+      </span>
+      <span v-else-if="isExpansionEnabled" class="text-emerald-600 font-medium">膨胀</span>
+      <span v-if="isHQMode" class="text-blue-600 font-medium">HQ</span>
+      <span v-if="sortBy !== 'time_desc'" class="text-purple-600 font-medium">排序</span>
+    </div>
 
     <!-- 批量编辑工具栏 -->
     <div
@@ -579,12 +670,12 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 主内容区 -->
-    <main class="flex-1 overflow-y-auto p-4 custom-scrollbar relative bg-slate-50">
+    <!-- 主内容区 - 图片网格 -->
+    <main class="px-4 pb-4">
       <!-- 图片网格 - 使用旧项目的列数配置 -->
       <div
         v-if="images.length > 0"
-        class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4 pb-40"
+        class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4"
       >
         <MemeCard
           v-for="(image, index) in images"
@@ -595,11 +686,14 @@ onMounted(() => {
           :prefer-h-q="isHQMode"
           :selectable="isBatchMode"
           :selected="selectedImages.has(image.id)"
+          :temp-mode="isTempTagMode"
           @copy="handleCopyImage"
           @delete="handleDeleteImage"
           @click-tag="handleTagClick"
           @edit="handleEditImage"
           @select="toggleImageSelection"
+          @preview="openPreview"
+          @apply-temp-tags="handleCardTempApply"
         />
       </div>
 
@@ -614,12 +708,12 @@ onMounted(() => {
       </div>
 
       <!-- 加载指示器 -->
-      <div v-if="isLoading" class="py-12 text-center text-slate-400">
-        <RefreshCw class="w-8 h-8 animate-spin mx-auto" />
+      <div v-if="isLoading" class="flex justify-center py-8">
+        <div class="w-8 h-8 border-4 border-slate-200 border-t-blue-500 rounded-full animate-spin"></div>
       </div>
 
       <!-- 到底提示 -->
-      <div v-if="!hasMore && images.length > 0 && !isLoading" class="py-16 text-center text-sm font-bold text-slate-300">
+      <div v-if="!hasMore && images.length > 0 && !isLoading" class="py-12 text-center text-sm font-semibold text-slate-300">
         - 到底了 -
       </div>
 
@@ -640,10 +734,13 @@ onMounted(() => {
       :is-expansion-enabled="isExpansionEnabled"
       :is-h-q-mode="isHQMode"
       :is-batch-mode="isBatchMode"
+      :is-temp-tag-mode="isTempTagMode"
       :sort-by="sortBy"
       :min-tags="minTags ?? undefined"
       :max-tags="maxTags ?? undefined"
       :temp-tags="tempTags"
+      :extensions="extensions"
+      :exclude-extensions="excludeExtensions"
       @upload="showUploadModal = true"
       @open-rules="showRulesPanel = true"
       @export="handleExport"
@@ -652,6 +749,7 @@ onMounted(() => {
       @toggle-expansion="handleToggleExpansion"
       @toggle-h-q="handleToggleHQ"
       @toggle-batch="toggleBatchMode"
+      @toggle-temp-mode="handleToggleTempMode"
       @search="handleSearchSubmit"
       @refresh="refresh"
       @clear="clearSearch"
@@ -659,6 +757,7 @@ onMounted(() => {
       @update-tag-range="handleUpdateTagRange"
       @update-temp-tags="handleUpdateTempTags"
       @apply-temp-tags="handleApplyTempTags"
+      @update-extensions="handleUpdateExtensions"
     />
 
     <!-- 规则树面板 -->
@@ -686,6 +785,15 @@ onMounted(() => {
     />
 
     <!-- Toast 通知容器 -->
+    <!-- 图片预览 -->
+    <ImagePreview
+      :image="previewImage"
+      :current-index="previewIndex"
+      :total-count="images.length"
+      @close="closePreview"
+      @navigate="navigatePreview"
+    />
+
     <ToastContainer />
   </div>
 </template>

@@ -11,7 +11,7 @@ const MAX_RETRIES = 3
 // 重试延迟（毫秒）
 const RETRY_DELAY = 500
 
-interface OptimisticUpdateOptions<T, R> {
+interface OptimisticUpdateOptions<R> {
   // 乐观更新函数：立即更新本地状态
   optimisticUpdate: () => void
   // 实际 API 调用
@@ -34,7 +34,7 @@ export function useOptimisticUpdate() {
   /**
    * 执行乐观更新操作
    */
-  async function execute<T, R>(options: OptimisticUpdateOptions<T, R>): Promise<boolean> {
+  async function execute<R>(options: OptimisticUpdateOptions<R>): Promise<boolean> {
     const {
       optimisticUpdate,
       apiCall,

@@ -132,21 +132,21 @@ function handleToggleEnabled(e: Event) {
 
 <template>
   <div
-    class="group-node"
+    class="rule-group mb-2"
     :class="{
       'opacity-50': isDragging,
       'ring-2 ring-red-400': isConflict
     }"
     :data-match="isMatch || undefined"
   >
-    <!-- 组头部 -->
+    <!-- 组头部 - 一比一复刻旧项目样式 -->
     <div
       :class="[
-        'group-header flex items-center justify-between p-2 rounded cursor-pointer group transition-colors',
-        isDragOver && isValidDropTarget ? 'bg-blue-100 ring-2 ring-blue-400' : '',
+        'rule-group-header flex items-center justify-between py-2.5 px-3 rounded-[10px] cursor-pointer group transition-all duration-150',
+        isDragOver && isValidDropTarget ? 'bg-blue-100 ring-2 ring-blue-400' : 'bg-slate-50',
         isMatch ? 'bg-yellow-50 hover:bg-yellow-100' : '',
         isConflict ? 'bg-red-50 hover:bg-red-100' : '',
-        isDisabled ? 'opacity-60' : '',
+        isDisabled ? 'opacity-50' : '',
         !isDragOver && !isMatch && !isConflict ? 'hover:bg-slate-100' : ''
       ]"
       draggable="true"
@@ -245,8 +245,8 @@ function handleToggleEnabled(e: Event) {
       </div>
     </div>
 
-    <!-- 展开内容 -->
-    <div v-if="isExpanded" class="ml-6 border-l border-slate-200 pl-2">
+    <!-- 展开内容 - 一比一复刻旧项目子节点容器样式 -->
+    <div v-if="isExpanded" class="rule-group-children ml-5 pl-3 mt-1 border-l-2 border-slate-200">
       <!-- 关键词列表 -->
       <div
         v-for="kw in group.keywords"

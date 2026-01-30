@@ -25,6 +25,7 @@ const toast = useToast()
 const isDragging = ref(false)
 const isUploading = ref(false)
 const uploadQueue = ref<UploadItem[]>([])
+const fileInputRef = ref<HTMLInputElement | null>(null)
 
 interface UploadItem {
   id: number
@@ -35,6 +36,10 @@ interface UploadItem {
 }
 
 let nextId = 0
+
+function triggerFilePicker() {
+  fileInputRef.value?.click()
+}
 
 // 计算 MD5
 async function calculateMD5(file: File): Promise<string> {
@@ -216,104 +221,107 @@ const canUpload = computed(() =>
 
 <template>
   <Teleport to="body">
-    <!-- 遮罩 -->
+    <!-- 遮罩 - 一比一复刻旧项目 -->
     <div
       v-if="visible"
-      class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      class="modal-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
       @click.self="close"
     >
       <!-- 模态框 -->
-      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+      <div class="modal-content bg-white rounded-[20px] shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
         <!-- 头部 -->
-        <div class="flex items-center justify-between p-4 border-b">
-          <h2 class="text-lg font-bold text-slate-800">上传图片</h2>
+        <div class="modal-header flex items-center justify-between px-6 py-5 border-b border-slate-200">
+          <h3 class="text-lg font-semibold text-slate-800">上传图片</h3>
           <button
-            class="p-1 text-slate-400 hover:text-slate-600 transition"
+            class="modal-close w-9 h-9 rounded-[10px] bg-slate-100 text-slate-500 flex items-center justify-center hover:bg-red-100 hover:text-red-600 transition-all"
             :disabled="isUploading"
             @click="close"
           >
-            <X class="w-6 h-6" />
+            <X class="w-5 h-5" />
           </button>
         </div>
 
-        <!-- 拖拽区域 -->
+        <!-- 拖拽区域 - 使用 upload-zone 样式 -->
         <div
           :class="[
-            'm-4 p-8 border-2 border-dashed rounded-xl transition-colors text-center',
-            isDragging ? 'border-blue-500 bg-blue-50' : 'border-slate-300 hover:border-slate-400'
+            'upload-zone m-6 p-12 border-2 border-dashed rounded-2xl transition-all text-center cursor-pointer',
+            isDragging ? 'dragover border-blue-500 bg-blue-100' : 'border-slate-300 bg-slate-50 hover:border-blue-500 hover:bg-blue-50'
           ]"
           @dragover="handleDragOver"
           @dragleave="handleDragLeave"
           @drop="handleDrop"
+          @click="triggerFilePicker"
         >
           <Upload class="w-12 h-12 mx-auto mb-4 text-slate-400" />
-          <p class="text-slate-600 mb-2">拖拽图片到此处，或</p>
-          <label class="inline-block px-4 py-2 bg-blue-500 text-white rounded-lg cursor-pointer hover:bg-blue-600 transition">
-            选择文件
-            <input
-              type="file"
-              multiple
-              accept="image/*"
-              class="hidden"
-              @change="handleFileSelect"
-            />
-          </label>
-          <p class="text-sm text-slate-400 mt-2">支持 GIF、PNG、JPG、WebP 格式</p>
+          <p class="text-base text-slate-600 mb-2">拖拽图片到此处，或点击选择</p>
+          <p class="text-sm text-slate-400">支持 GIF、PNG、JPG、WebP 格式</p>
+          <input
+            ref="fileInputRef"
+            type="file"
+            multiple
+            accept="image/*"
+            class="hidden"
+            @change="handleFileSelect"
+          />
         </div>
 
-        <!-- 上传队列 -->
-        <div v-if="uploadQueue.length > 0" class="flex-1 overflow-auto px-4">
-          <div class="space-y-2 pb-4">
+        <!-- 上传队列预览 -->
+        <div v-if="uploadQueue.length > 0" class="modal-body flex-1 overflow-auto px-6 pb-4">
+          <div class="upload-preview-list grid grid-cols-4 gap-3">
             <div
               v-for="item in uploadQueue"
               :key="item.id"
-              class="flex items-center gap-3 p-2 bg-slate-50 rounded-lg"
+              :class="[
+                'upload-preview-item relative aspect-square rounded-xl overflow-hidden bg-slate-200 group',
+                item.status === 'duplicate' ? 'ring-2 ring-amber-500' : '',
+                item.status === 'error' ? 'ring-2 ring-red-500' : '',
+                item.status === 'success' ? 'ring-2 ring-green-500' : ''
+              ]"
             >
               <!-- 预览图 -->
-              <div class="w-12 h-12 rounded overflow-hidden bg-slate-200 flex-shrink-0">
-                <img
-                  v-if="item.preview"
-                  :src="item.preview"
-                  class="w-full h-full object-cover"
-                />
-                <Image v-else class="w-full h-full p-2 text-slate-400" />
+              <img
+                v-if="item.preview"
+                :src="item.preview"
+                class="w-full h-full object-cover"
+              />
+              <Image v-else class="w-full h-full p-4 text-slate-400" />
+
+              <!-- 状态覆盖层 -->
+              <div
+                v-if="item.status !== 'pending'"
+                class="absolute inset-0 flex items-center justify-center bg-black/40"
+              >
+                <Loader2 v-if="item.status === 'uploading'" class="w-8 h-8 text-white animate-spin" />
+                <CheckCircle v-else-if="item.status === 'success'" class="w-8 h-8 text-green-400" />
+                <XCircle v-else-if="item.status === 'error'" class="w-8 h-8 text-red-400" />
+                <span v-else-if="item.status === 'duplicate'" class="px-2 py-1 bg-amber-500 text-white text-xs font-bold rounded">重复</span>
               </div>
+
+              <!-- 删除按钮 -->
+              <button
+                v-if="item.status === 'pending'"
+                class="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-500/90 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                @click="removeItem(item.id)"
+              >
+                <X class="w-3.5 h-3.5" />
+              </button>
 
               <!-- 文件名 -->
-              <div class="flex-1 min-w-0">
-                <p class="text-sm font-medium text-slate-700 truncate">{{ item.file.name }}</p>
-                <p class="text-xs text-slate-400">
-                  {{ (item.file.size / 1024).toFixed(1) }} KB
-                  <span v-if="item.message" class="ml-2">· {{ item.message }}</span>
-                </p>
-              </div>
-
-              <!-- 状态图标 -->
-              <div class="flex-shrink-0">
-                <Loader2 v-if="item.status === 'uploading'" class="w-5 h-5 text-blue-500 animate-spin" />
-                <CheckCircle v-else-if="item.status === 'success'" class="w-5 h-5 text-green-500" />
-                <XCircle v-else-if="item.status === 'error'" class="w-5 h-5 text-red-500" />
-                <span v-else-if="item.status === 'duplicate'" class="text-xs text-orange-500 font-medium">已存在</span>
-                <button
-                  v-else
-                  class="p-1 text-slate-400 hover:text-red-500 transition"
-                  @click="removeItem(item.id)"
-                >
-                  <X class="w-4 h-4" />
-                </button>
+              <div class="absolute bottom-0 left-0 right-0 px-2 py-1 bg-black/60 text-white text-[10px] truncate">
+                {{ item.file.name }}
               </div>
             </div>
           </div>
         </div>
 
         <!-- 底部操作 -->
-        <div class="flex items-center justify-between p-4 border-t bg-slate-50 rounded-b-2xl">
+        <div class="modal-footer flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50">
           <div class="text-sm text-slate-500">
             {{ uploadQueue.length }} 个文件，{{ pendingCount }} 个待上传
           </div>
-          <div class="flex gap-2">
+          <div class="flex gap-3">
             <button
-              class="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg transition"
+              class="modal-btn secondary px-5 py-2.5 bg-slate-100 text-slate-600 rounded-[10px] hover:bg-slate-200 transition-all"
               :disabled="isUploading"
               @click="clearQueue"
             >
@@ -321,9 +329,9 @@ const canUpload = computed(() =>
             </button>
             <button
               :class="[
-                'px-4 py-2 rounded-lg transition flex items-center gap-2',
+                'modal-btn px-5 py-2.5 rounded-[10px] transition-all flex items-center gap-2 font-medium',
                 canUpload
-                  ? 'bg-blue-500 text-white hover:bg-blue-600'
+                  ? 'primary bg-blue-500 text-white hover:bg-blue-600'
                   : 'bg-slate-200 text-slate-400 cursor-not-allowed'
               ]"
               :disabled="!canUpload"

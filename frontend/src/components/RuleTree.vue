@@ -107,19 +107,7 @@ function detectCycles(nodes: RuleGroup[]): { conflictNodes: RuleGroup[], hasConf
   buildMap(nodes)
 
   // 检测从 startId 开始是否能到达 targetId（检测循环）
-  function canReach(startId: number, targetId: number, visited = new Set<number>()): boolean {
-    if (startId === targetId) return true
-    if (visited.has(startId)) return false
-    visited.add(startId)
 
-    const node = nodeMap.get(startId)
-    if (!node) return false
-
-    for (const child of node.children) {
-      if (canReach(child.id, targetId, visited)) return true
-    }
-    return false
-  }
 
   // 标记冲突节点
   nodeMap.forEach(node => {
@@ -569,45 +557,47 @@ onMounted(() => {
 
 <template>
   <Teleport to="body">
-    <!-- 左侧切换条 - 面板关闭时显示 -->
+    <!-- 左侧切换条 - 面板关闭时显示（一比一复刻旧项目绿色渐变） -->
     <button
       v-show="!visible"
-      class="fixed top-16 left-0 z-50 w-5 hover:w-6 flex items-center justify-center bg-gradient-to-r from-slate-50 to-white hover:from-slate-100 hover:to-slate-50 text-slate-400 hover:text-slate-600 border-r border-y border-slate-200 hover:border-slate-300 rounded-r-md shadow-md hover:shadow-lg transition-all duration-300 group"
-      style="height: calc(100vh - 4rem - 4rem);"
+      class="rules-toggle-bar fixed left-0 top-1/2 -translate-y-1/2 z-50 w-5 h-20 flex items-center justify-center rounded-r-lg cursor-pointer transition-all duration-200 hover:w-6"
+      style="background: linear-gradient(to right, #f0fdf4, #dcfce7);"
       title="打开规则树"
       @click="emit('toggle')"
+
     >
-      <ChevronRight class="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+      <ChevronRight class="w-3 h-3 text-green-600" />
     </button>
 
     <!-- 遮罩 -->
     <div
       v-if="visible"
-      class="fixed inset-0 bg-black/30 z-40"
+      class="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 transition-opacity"
       @click="close"
     />
 
-    <!-- 面板 -->
+    <!-- 面板 - 320px 宽度 -->
     <aside
       :class="[
-        'fixed top-0 left-0 w-80 h-full bg-white shadow-xl z-50 flex flex-col transform transition-transform duration-300',
+        'rules-panel fixed top-0 left-0 w-80 h-full bg-white z-50 flex flex-col transform transition-transform duration-300',
         visible ? 'translate-x-0' : '-translate-x-full'
       ]"
+      style="box-shadow: 4px 0 24px rgba(0, 0, 0, 0.15);"
     >
       <!-- 头部 -->
-      <div class="flex items-center justify-between p-4 border-b flex-shrink-0">
-        <h2 class="text-lg font-bold text-slate-800">规则树</h2>
+      <div class="rules-panel-header flex items-center justify-between p-5 border-b border-slate-200 flex-shrink-0">
+        <h2 class="text-lg font-semibold text-slate-800">规则树</h2>
         <div class="flex items-center gap-2">
           <span class="text-xs text-slate-400">v{{ globalStore.rulesVersion }}</span>
           <button
-            class="p-1 text-slate-400 hover:text-slate-600"
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-all"
             :class="{ 'animate-spin': isLoading }"
             @click="loadRulesTree"
           >
             <RefreshCw class="w-4 h-4" />
           </button>
           <button
-            class="p-1 text-slate-400 hover:text-slate-600"
+            class="w-8 h-8 rounded-lg flex items-center justify-center bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-all"
             @click="close"
           >
             <X class="w-5 h-5" />

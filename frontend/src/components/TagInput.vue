@@ -4,7 +4,6 @@
  * 支持：空格/回车添加标签、排除标签(-)、同义词组(,)、点击编辑、删除、标签建议
  */
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { X } from 'lucide-vue-next'
 
 // 标签类型
 interface Tag {
@@ -98,7 +97,7 @@ function getTagStyle(tag: Tag): string {
   if (exclude) return 'bg-red-100 text-red-600 border-red-200 hover:bg-red-200'
   if (synonym) return 'bg-green-100 text-green-600 border-green-200 hover:bg-green-200'
   if (props.theme === 'purple') return 'bg-purple-100 text-purple-700 border-purple-200 hover:bg-purple-200'
-  return 'bg-blue-100 text-blue-600 border-blue-200 hover:bg-blue-200'
+  return 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200'
 }
 
 // 获取标签提示文本
@@ -222,7 +221,10 @@ function handleKeydown(e: KeyboardEvent) {
     }
     if (e.key === 'Tab' && selectedSuggestionIndex.value >= 0) {
       e.preventDefault()
-      selectSuggestion(filteredSuggestions.value[selectedSuggestionIndex.value])
+      const suggestion = filteredSuggestions.value[selectedSuggestionIndex.value]
+      if (suggestion) {
+        selectSuggestion(suggestion)
+      }
       return
     }
     if (e.key === 'Escape') {
@@ -236,7 +238,10 @@ function handleKeydown(e: KeyboardEvent) {
     // 如果有选中的建议，使用建议
     if (showSuggestions.value && selectedSuggestionIndex.value >= 0) {
       e.preventDefault()
-      selectSuggestion(filteredSuggestions.value[selectedSuggestionIndex.value])
+      const suggestion = filteredSuggestions.value[selectedSuggestionIndex.value]
+      if (suggestion) {
+        selectSuggestion(suggestion)
+      }
       return
     }
 
@@ -307,7 +312,7 @@ defineExpose({
 <template>
   <div
     ref="containerRef"
-    class="relative flex flex-wrap items-center gap-2 bg-slate-100 rounded-xl px-3 py-2 min-h-[50px] max-h-[120px] overflow-y-auto cursor-text transition-colors border border-transparent hover:bg-slate-50 focus-within:bg-white focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-100 custom-scrollbar"
+    class="search-input-wrapper relative flex flex-wrap items-center gap-2 bg-slate-100 rounded-xl px-3 py-2 min-h-[50px] max-h-[120px] overflow-y-auto cursor-text transition-all duration-200 border border-transparent hover:bg-slate-50 focus-within:bg-white focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-100"
     @click="focusInput"
   >
     <!-- 标签胶囊 -->
@@ -315,7 +320,7 @@ defineExpose({
       v-for="(tag, index) in tags"
       :key="`${tag.text}-${index}`"
       :class="[
-        'flex items-center gap-1 px-3 py-1 rounded-full text-sm font-bold cursor-pointer select-none transition-transform active:scale-95 border tag-capsule',
+        'tag-capsule inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-bold cursor-pointer select-none transition-transform active:scale-95 border max-w-full break-all',
         getTagStyle(tag)
       ]"
       :title="getTagTitle(tag)"
@@ -323,13 +328,10 @@ defineExpose({
       <span @click.stop="editTag(index)">
         {{ tag.exclude ? '-' : '' }}{{ tag.text }}
       </span>
-      <button
-        type="button"
-        class="ml-1 hover:text-black/50 rounded-full hover:bg-black/5 transition-colors p-0.5"
+      <span
+        class="ml-1 hover:text-black/50 text-lg leading-none px-1 rounded-full hover:bg-black/5 transition-colors cursor-pointer"
         @click.stop="removeTag(index)"
-      >
-        <X class="w-3.5 h-3.5" />
-      </button>
+      >&times;</span>
     </div>
 
     <!-- 输入框 -->
@@ -338,7 +340,7 @@ defineExpose({
       v-model="inputValue"
       type="text"
       :placeholder="computedPlaceholder"
-      class="flex-grow min-w-[60px] bg-transparent outline-none text-slate-700 placeholder-slate-400 font-medium h-8 text-sm"
+      class="search-input flex-grow min-w-[60px] bg-transparent outline-none text-slate-700 placeholder-slate-400 font-medium h-8 text-sm"
       autocomplete="off"
       @input="handleInput"
       @keydown="handleKeydown"
@@ -348,7 +350,7 @@ defineExpose({
     <!-- 建议下拉列表 -->
     <div
       v-if="showSuggestions && filteredSuggestions.length > 0"
-      class="absolute left-0 right-0 top-full mt-1 bg-white rounded-xl shadow-xl border border-slate-200 py-1 z-50 max-h-64 overflow-y-auto custom-scrollbar"
+      class="absolute left-0 right-0 top-full mt-1 bg-white rounded-xl shadow-xl border border-slate-200 py-1 z-50 max-h-64 overflow-y-auto"
     >
       <button
         v-for="(suggestion, index) in filteredSuggestions"

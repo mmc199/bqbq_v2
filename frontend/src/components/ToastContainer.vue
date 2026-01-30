@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /**
  * ToastContainer 组件 - 全局通知容器
+ * 一比一复刻旧项目样式：白色背景 + 左侧彩色边框
  */
 import { useToast, type ToastMessage } from '@/composables/useToast'
 import { CheckCircle, XCircle, Info, AlertTriangle, X } from 'lucide-vue-next'
@@ -16,32 +17,41 @@ function getIcon(type: ToastMessage['type']) {
   }
 }
 
-function getBgColor(type: ToastMessage['type']) {
+function getIconColor(type: ToastMessage['type']) {
   switch (type) {
-    case 'success': return 'bg-green-500'
-    case 'error': return 'bg-red-500'
-    case 'warning': return 'bg-orange-500'
-    default: return 'bg-blue-500'
+    case 'success': return 'text-green-500'
+    case 'error': return 'text-red-500'
+    case 'warning': return 'text-amber-500'
+    default: return 'text-blue-500'
+  }
+}
+
+function getBorderColor(type: ToastMessage['type']) {
+  switch (type) {
+    case 'success': return 'border-l-green-500'
+    case 'error': return 'border-l-red-500'
+    case 'warning': return 'border-l-amber-500'
+    default: return 'border-l-blue-500'
   }
 }
 </script>
 
 <template>
   <Teleport to="body">
-    <div class="fixed bottom-8 right-8 z-[100] flex flex-col gap-2">
+    <div class="toast-container">
       <TransitionGroup name="toast">
         <div
           v-for="toast in toasts"
           :key="toast.id"
           :class="[
-            'flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl text-white font-medium min-w-[280px] max-w-[400px]',
-            getBgColor(toast.type)
+            'toast-item border-l-4',
+            getBorderColor(toast.type)
           ]"
         >
-          <component :is="getIcon(toast.type)" class="w-5 h-5 flex-shrink-0" />
-          <span class="flex-1">{{ toast.message }}</span>
+          <component :is="getIcon(toast.type)" :class="['w-5 h-5 flex-shrink-0', getIconColor(toast.type)]" />
+          <span class="flex-1 text-sm text-slate-700">{{ toast.message }}</span>
           <button
-            class="p-1 hover:bg-white/20 rounded transition-colors flex-shrink-0"
+            class="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-all flex-shrink-0"
             @click="remove(toast.id)"
           >
             <X class="w-4 h-4" />
