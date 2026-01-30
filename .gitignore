@@ -15,8 +15,10 @@ build/
 *.db
 *.sqlite3
 
-# Images (user data)
+# Images (user data, symlinks)
 backend/images/
+backend/meme_images/
+backend/meme_images_thumbnail/
 
 # IDE
 .idea/

@@ -131,6 +131,12 @@ async def search_images(request: SearchRequest):
                 params.append(f"%.{ext.lower()}")
             where_clauses.append(f"({' OR '.join(ext_conditions)})")
 
+        # 排除扩展名
+        if request.exclude_extensions:
+            for ext in request.exclude_extensions:
+                where_clauses.append("LOWER(i.filename) NOT LIKE ?")
+                params.append(f"%.{ext.lower()}")
+
         where_sql = " AND ".join(where_clauses)
 
         # 获取总数

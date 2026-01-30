@@ -7,10 +7,13 @@ import type { RulesTree } from '@/types'
 
 const CLIENT_ID_KEY = 'bqbq_client_id'
 const RULES_VERSION_KEY = 'bqbq_rules_version'
+const RULES_TREE_KEY = 'bqbq_rules_tree'
+const RULES_TREE_TIMESTAMP_KEY = 'bqbq_rules_tree_timestamp'
 const PREFERENCES_KEY = 'bqbq_preferences'
 const TAG_CACHE_KEY = 'bqbq_tag_cache'
 const TAG_TIMESTAMP_KEY = 'bqbq_tag_timestamp'
 const TAG_CACHE_TTL = 10 * 60 * 1000 // 10 分钟缓存有效期
+const RULES_TREE_CACHE_TTL = 10 * 60 * 1000 // 规则树缓存 10 分钟
 
 // 用户偏好设置类型
 interface UserPreferences {
@@ -98,10 +101,52 @@ export const useGlobalStore = defineStore('global', () => {
     localStorage.setItem(RULES_VERSION_KEY, version.toString())
   }
 
-  // 设置规则树
+  // 设置规则树（同时保存到 LocalStorage）
   function setRulesTree(tree: RulesTree) {
     rulesTree.value = tree
     updateRulesVersion(tree.version)
+    saveRulesTreeCache(tree)
+  }
+
+  // 规则树缓存相关方法（与旧项目保持一致）
+  function loadRulesTreeCache(): RulesTree | null {
+    try {
+      const cached = localStorage.getItem(RULES_TREE_KEY)
+      const timestamp = localStorage.getItem(RULES_TREE_TIMESTAMP_KEY)
+
+      if (cached && timestamp) {
+        const ts = parseInt(timestamp, 10)
+        if (Date.now() - ts < RULES_TREE_CACHE_TTL) {
+          const tree = JSON.parse(cached) as RulesTree
+          rulesTree.value = tree
+          return tree
+        }
+      }
+    } catch (e) {
+      console.warn('加载规则树缓存失败:', e)
+    }
+    return null
+  }
+
+  function saveRulesTreeCache(tree: RulesTree) {
+    try {
+      const now = Date.now()
+      localStorage.setItem(RULES_TREE_KEY, JSON.stringify(tree))
+      localStorage.setItem(RULES_TREE_TIMESTAMP_KEY, now.toString())
+    } catch (e) {
+      console.warn('保存规则树缓存失败:', e)
+    }
+  }
+
+  function clearRulesTreeCache() {
+    localStorage.removeItem(RULES_TREE_KEY)
+    localStorage.removeItem(RULES_TREE_TIMESTAMP_KEY)
+  }
+
+  function isRulesTreeCacheValid(): boolean {
+    const timestamp = localStorage.getItem(RULES_TREE_TIMESTAMP_KEY)
+    if (!timestamp) return false
+    return Date.now() - parseInt(timestamp, 10) < RULES_TREE_CACHE_TTL
   }
 
   // 标签缓存相关方法
@@ -151,6 +196,7 @@ export const useGlobalStore = defineStore('global', () => {
   function init() {
     saveClientId()
     loadTagCache()
+    loadRulesTreeCache()
   }
 
   // 计算属性：是否有规则树
@@ -172,6 +218,10 @@ export const useGlobalStore = defineStore('global', () => {
     saveTagCache,
     clearTagCache,
     isTagCacheValid,
+    loadRulesTreeCache,
+    saveRulesTreeCache,
+    clearRulesTreeCache,
+    isRulesTreeCacheValid,
     init,
   }
 })

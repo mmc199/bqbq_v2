@@ -107,11 +107,18 @@ def create_thumbnail(source_path: Path, thumb_path: Path) -> bool:
 @app.get("/thumbnails/{filename}")
 async def serve_thumbnail(filename: str):
     """提供缩略图服务"""
-    # 获取不带后缀的文件名（即 md5）
+    # 获取不带后缀的文件名
     base_name = os.path.splitext(filename)[0]
 
-    # 拼接强制的 jpg 缩略图文件名
-    thumb_name = f"{base_name}_thumbnail.jpg"
+    # 如果文件名已经包含 _thumbnail，直接使用
+    if base_name.endswith("_thumbnail"):
+        thumb_name = f"{base_name}.jpg"
+        md5 = base_name.replace("_thumbnail", "")
+    else:
+        # 否则添加 _thumbnail 后缀
+        thumb_name = f"{base_name}_thumbnail.jpg"
+        md5 = base_name
+
     thumb_path = thumbnails_path / thumb_name
 
     if thumb_path.exists():
@@ -120,7 +127,7 @@ async def serve_thumbnail(filename: str):
     # 如果缩略图不存在，尝试生成
     # 查找原图
     for ext in settings.allowed_extensions:
-        original_path = images_path / f"{base_name}.{ext}"
+        original_path = images_path / f"{md5}.{ext}"
         if original_path.exists():
             if create_thumbnail(original_path, thumb_path):
                 return FileResponse(thumb_path)

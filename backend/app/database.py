@@ -201,6 +201,32 @@ def increment_rules_version(conn: sqlite3.Connection, client_id: str, operation:
     return new_version
 
 
+def get_conflict_info(base_version: int) -> dict:
+    """
+    获取版本冲突的详细信息。
+
+    Args:
+        base_version: 客户端的基础版本号
+
+    Returns:
+        包含冲突统计信息的字典
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        # 统计期间有多少不同的修改者
+        cursor.execute(
+            "SELECT COUNT(DISTINCT client_id) FROM search_version_log WHERE version_id > ?",
+            (base_version,)
+        )
+        row = cursor.fetchone()
+        unique_modifiers = row[0] if row else 0
+
+        return {
+            "unique_modifiers": unique_modifiers
+        }
+
+
 def rebuild_tags_dict():
     """
     重建 tags_dict 表，统计所有图片中每个标签的实际使用次数。

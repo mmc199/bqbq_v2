@@ -1,10 +1,12 @@
 /**
  * 乐观更新和冲突重试机制
  * 支持 CAS (Compare-And-Swap) 操作的自动重试
+ * 与旧项目保持一致：冲突时自动获取最新数据并重试
  */
 import { ref } from 'vue'
 import { useGlobalStore } from '@/stores/useGlobalStore'
 import { useToast } from './useToast'
+import type { ConflictResponse } from './useApi'
 
 // 最大重试次数
 const MAX_RETRIES = 3
@@ -15,13 +17,18 @@ interface OptimisticUpdateOptions<R> {
   // 乐观更新函数：立即更新本地状态
   optimisticUpdate: () => void
   // 实际 API 调用
-  apiCall: (clientId: string, baseVersion: number) => Promise<{ success: boolean; data?: R; error?: string }>
+  apiCall: (clientId: string, baseVersion: number) => Promise<{
+    success: boolean
+    data?: R
+    error?: string
+    conflict?: ConflictResponse
+  }>
   // 成功回调
   onSuccess?: (data: R) => void
   // 失败回调：回滚本地状态
   onError?: (error: string) => void
-  // 冲突回调：获取最新数据后重试
-  onConflict?: () => Promise<void>
+  // 冲突回调：使用最新数据更新本地状态
+  onConflict?: (latestData: ConflictResponse) => Promise<void>
   // 是否显示 toast 提示
   showToast?: boolean
 }
@@ -33,6 +40,7 @@ export function useOptimisticUpdate() {
 
   /**
    * 执行乐观更新操作
+   * 与旧项目保持一致：冲突时自动使用最新数据更新本地状态并重试
    */
   async function execute<R>(options: OptimisticUpdateOptions<R>): Promise<boolean> {
     const {
@@ -66,13 +74,18 @@ export function useOptimisticUpdate() {
         return true
       }
 
-      // 检查是否是版本冲突（409）
-      if (result.error?.includes('409') || result.error?.includes('conflict') || result.error?.includes('版本')) {
+      // 检查是否是版本冲突（409）- 使用 conflict 字段
+      if (result.conflict) {
         retries++
+        console.log(`[OptimisticUpdate] 版本冲突，重试 ${retries}/${MAX_RETRIES}，期间有 ${result.conflict.unique_modifiers} 个修改者`)
+
+        // 使用冲突响应中的最新数据更新本地状态
+        globalStore.updateRulesVersion(result.conflict.current_version)
+
         if (retries < MAX_RETRIES) {
-          // 冲突：获取最新数据后重试
+          // 冲突：使用最新数据更新本地状态
           if (onConflict) {
-            await onConflict()
+            await onConflict(result.conflict)
           }
           // 等待一段时间后重试
           await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))

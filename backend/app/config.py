@@ -11,11 +11,11 @@ class Settings(BaseSettings):
     # 数据库路径
     database_path: Path = Path("meme.db")
 
-    # 图片存储路径
-    images_path: Path = Path("images")
+    # 图片存储路径（软链接到旧项目位置）
+    images_path: Path = Path(__file__).parent.parent / "meme_images"
 
-    # 缩略图存储路径
-    thumbnails_path: Path = Path("thumbnails")
+    # 缩略图存储路径（软链接到旧项目位置）
+    thumbnails_path: Path = Path(__file__).parent.parent / "meme_images_thumbnail"
 
     # 缩略图最大尺寸
     thumbnail_max_size: int = 600

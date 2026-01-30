@@ -5,11 +5,21 @@ import type { ApiResponse, SearchRequest, SearchResponse, MemeImage, RulesTree, 
 
 const API_BASE = '/api'
 
+// 冲突响应类型（与旧项目保持一致）
+export interface ConflictResponse {
+  success: false
+  error: 'conflict'
+  detail: string
+  current_version: number
+  latest_data: RulesTree
+  unique_modifiers: number
+}
+
 // 通用请求函数
 async function request<T>(
   endpoint: string,
   options: RequestInit = {}
-): Promise<ApiResponse<T>> {
+): Promise<ApiResponse<T> & { conflict?: ConflictResponse }> {
   try {
     const response = await fetch(`${API_BASE}${endpoint}`, {
       headers: {
@@ -19,11 +29,21 @@ async function request<T>(
       ...options,
     })
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    const data = await response.json()
+
+    // 处理 409 冲突响应（与旧项目保持一致）
+    if (response.status === 409) {
+      return {
+        success: false,
+        error: `HTTP 409: ${data.detail || '版本冲突'}`,
+        conflict: data as ConflictResponse,
+      }
     }
 
-    const data = await response.json()
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${data.detail || response.statusText}`)
+    }
+
     // 后端直接返回数据，包装成 ApiResponse 格式
     return { success: true, data }
   } catch (error) {

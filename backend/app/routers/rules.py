@@ -2,7 +2,8 @@
 规则树路由
 """
 from fastapi import APIRouter, HTTPException, Response
-from ..database import get_connection, get_rules_version, increment_rules_version
+from fastapi.responses import JSONResponse
+from ..database import get_connection, get_rules_version, increment_rules_version, get_conflict_info
 from ..models.rule import (
     GroupCreate, GroupResponse, KeywordCreate,
     RulesTreeResponse, KeywordResponse, CASRequest,
@@ -12,6 +13,30 @@ from ..models.rule import (
 )
 
 router = APIRouter()
+
+
+def create_conflict_response(base_version: int, current_version: int):
+    """
+    创建版本冲突响应，包含最新规则树数据和冲突统计信息。
+    与旧项目保持一致的响应格式。
+    """
+    conflict_info = get_conflict_info(base_version)
+    tree = build_rules_tree()
+
+    return JSONResponse(
+        status_code=409,
+        content={
+            "success": False,
+            "error": "conflict",
+            "detail": f"版本冲突: 期望 {base_version}, 当前 {current_version}",
+            "current_version": current_version,
+            "latest_data": {
+                "version": current_version,
+                "groups": [g.model_dump() for g in tree]
+            },
+            "unique_modifiers": conflict_info["unique_modifiers"]
+        }
+    )
 
 
 def build_rules_tree() -> list[GroupResponse]:
@@ -82,16 +107,13 @@ async def get_rules_tree(response: Response, if_none_match: str | None = None):
 @router.post("/groups")
 async def create_group(data: GroupCreate):
     """创建规则组"""
+    # CAS 版本检查（在事务外）
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
 
         # 检查父组是否存在
         if data.parent_id is not None:
@@ -135,16 +157,13 @@ async def create_group(data: GroupCreate):
 @router.post("/groups/{group_id}/keywords")
 async def add_keyword(group_id: int, data: KeywordCreate):
     """添加关键词到组"""
+    # CAS 版本检查
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
 
         # 检查组是否存在
         cursor.execute("SELECT id FROM search_groups WHERE id = ?", (group_id,))
@@ -171,16 +190,13 @@ async def add_keyword(group_id: int, data: KeywordCreate):
 @router.delete("/groups/{group_id}")
 async def delete_group(group_id: int, data: CASRequest):
     """删除规则组（级联删除子组和关键词）"""
+    # CAS 版本检查
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
 
         # 检查组是否存在
         cursor.execute("SELECT name FROM search_groups WHERE id = ?", (group_id,))
@@ -206,16 +222,13 @@ async def delete_group(group_id: int, data: CASRequest):
 @router.delete("/keywords/{keyword_id}")
 async def delete_keyword(keyword_id: int, data: CASRequest):
     """删除关键词"""
+    # CAS 版本检查
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
 
         # 检查关键词是否存在
         cursor.execute("SELECT keyword FROM search_keywords WHERE id = ?", (keyword_id,))
@@ -239,16 +252,13 @@ async def delete_keyword(keyword_id: int, data: CASRequest):
 @router.post("/keywords/{keyword_id}/toggle")
 async def toggle_keyword(keyword_id: int, data: KeywordToggle):
     """切换关键词启用状态"""
+    # CAS 版本检查
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
 
         # 检查关键词是否存在
         cursor.execute("SELECT keyword FROM search_keywords WHERE id = ?", (keyword_id,))
@@ -275,16 +285,13 @@ async def toggle_keyword(keyword_id: int, data: KeywordToggle):
 @router.put("/groups/{group_id}")
 async def update_group(group_id: int, data: GroupUpdate):
     """更新规则组（重命名、移动父节点、启用/禁用）"""
+    # CAS 版本检查
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
 
         # 检查组是否存在
         cursor.execute("SELECT id, name, parent_id FROM search_groups WHERE id = ?", (group_id,))
@@ -338,16 +345,13 @@ async def update_group(group_id: int, data: GroupUpdate):
 @router.post("/groups/{group_id}/toggle")
 async def toggle_group(group_id: int, data: GroupToggle):
     """切换规则组启用状态"""
+    # CAS 版本检查
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
 
         # 检查组是否存在
         cursor.execute("SELECT id FROM search_groups WHERE id = ?", (group_id,))
@@ -371,16 +375,13 @@ async def toggle_group(group_id: int, data: GroupToggle):
 @router.post("/groups/batch")
 async def batch_groups(data: GroupBatchRequest):
     """批量操作规则组"""
+    # CAS 版本检查
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
 
         affected = 0
 
@@ -421,19 +422,66 @@ async def batch_groups(data: GroupBatchRequest):
         return {"success": True, "new_version": new_version, "affected": affected}
 
 
+def has_hierarchy_cycle(cursor, parent_id: int, child_id: int) -> bool:
+    """
+    检测添加 parent_id -> child_id 关系是否会形成环路。
+
+    算法：从 parent_id 开始，沿着 parent 方向 DFS，如果能走到 child_id，
+    说明 child_id 是 parent_id 的祖先，添加此关系会形成环。
+
+    Args:
+        cursor: 数据库游标
+        parent_id: 待添加的父节点ID
+        child_id: 待添加的子节点ID
+
+    Returns:
+        bool: True 表示会形成环，False 表示安全
+    """
+    if parent_id == child_id:
+        return True  # 自引用必然成环
+
+    visited = set()
+
+    def dfs(current_node: int) -> bool:
+        """从 current_node 向上查找所有父节点，检测是否能到达 child_id"""
+        if current_node == child_id:
+            return True  # 找到 child_id，说明它是祖先，会形成环
+
+        if current_node in visited:
+            return False  # 已访问过，避免无限循环
+
+        visited.add(current_node)
+
+        # 查找 current_node 的父节点
+        cursor.execute(
+            "SELECT parent_id FROM search_groups WHERE id = ? AND parent_id IS NOT NULL",
+            (current_node,)
+        )
+        row = cursor.fetchone()
+
+        if row and row['parent_id']:
+            return dfs(row['parent_id'])
+
+        return False
+
+    # 从 parent_id 开始向上查找，检测 child_id 是否是其祖先
+    return dfs(parent_id)
+
+
 @router.post("/hierarchy/add")
 async def add_hierarchy(data: HierarchyAddRequest):
     """添加层级关系（将子节点移动到父节点下）"""
+    # CAS 版本检查
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
 
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
+        # 检查自引用
+        if data.parent_id == data.child_id:
+            raise HTTPException(status_code=400, detail="不能将节点设为自己的子节点")
 
         # 检查节点是否存在
         cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.child_id,))
@@ -443,6 +491,10 @@ async def add_hierarchy(data: HierarchyAddRequest):
         cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.parent_id,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="父节点不存在")
+
+        # 检查是否会形成环路
+        if has_hierarchy_cycle(cursor, data.parent_id, data.child_id):
+            raise HTTPException(status_code=400, detail="不能创建循环引用关系")
 
         # 更新父节点
         cursor.execute(
@@ -465,16 +517,13 @@ async def add_hierarchy(data: HierarchyAddRequest):
 @router.post("/hierarchy/remove")
 async def remove_hierarchy(data: HierarchyRemoveRequest):
     """删除层级关系（将子节点移动到根级别）"""
+    # CAS 版本检查
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
 
         # 检查节点是否存在
         cursor.execute("SELECT id, parent_id FROM search_groups WHERE id = ?", (data.child_id,))
@@ -503,16 +552,13 @@ async def remove_hierarchy(data: HierarchyRemoveRequest):
 @router.post("/hierarchy/batch_move")
 async def batch_move_hierarchy(data: HierarchyBatchMoveRequest):
     """批量移动层级"""
+    # CAS 版本检查
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
     with get_connection() as conn:
         cursor = conn.cursor()
-
-        # CAS 版本检查
-        current_version = get_rules_version()
-        if data.base_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-            )
 
         # 检查新父节点是否存在
         if data.new_parent_id is not None:

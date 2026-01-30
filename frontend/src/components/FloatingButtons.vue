@@ -6,9 +6,9 @@
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import {
   Search, RefreshCw, X, Download, Upload, Trash2,
-  TreeDeciduous, TreePine, ImagePlus, ChevronsRight, ChevronsLeft,
-  ArrowUpDown, Zap, Plus, Check, CheckSquare,
-  FileType, Hash, Stamp, FileText
+  TreePine, ImagePlus, ChevronsRight, ChevronsLeft,
+  ArrowUpDown, Plus, Check,
+  Hash, Stamp, FileText
 } from 'lucide-vue-next'
 import * as noUiSlider from 'nouislider'
 import 'nouislider/dist/nouislider.css'
@@ -17,7 +17,6 @@ import { useGlobalStore } from '@/stores/useGlobalStore'
 const SLIDER_MAX_VISUAL = 6
 const INFINITY_DISPLAY = '∞'
 const STORAGE_KEY = 'bqbq_fab_mini_position'
-const AVAILABLE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']
 
 const props = defineProps<{
   isTrashMode?: boolean
@@ -57,7 +56,6 @@ const globalStore = useGlobalStore()
 const isTrashMode = computed(() => !!props.isTrashMode)
 const isExpansionEnabled = computed(() => !!props.isExpansionEnabled)
 const isHQMode = computed(() => !!props.isHQMode)
-const isBatchMode = computed(() => !!props.isBatchMode)
 
 const isCollapsed = computed({
   get: () => globalStore.preferences.fabCollapsed,
@@ -240,10 +238,6 @@ watch(
   { immediate: true }
 )
 
-const isExtensionFilterActive = computed(
-  () => localExtensions.value.length > 0 || localExcludeExtensions.value.length > 0
-)
-
 const isDragging = ref(false)
 const dragStartY = ref(0)
 const dragStartTop = ref(0)
@@ -322,12 +316,6 @@ function toggleTempPanel() {
   }
 }
 
-function toggleExtensionPanel() {
-  const next = !showExtensionPanel.value
-  closeAllPanels()
-  showExtensionPanel.value = next
-}
-
 function selectSort(value: string) {
   emit('updateSort', value)
   showSortMenu.value = false
@@ -355,50 +343,6 @@ function applyTempTags() {
 function clearTempTags() {
   localTempTags.value = []
   emit('updateTempTags', [])
-}
-
-function toggleExtension(ext: string) {
-  const idx = localExtensions.value.indexOf(ext)
-  if (idx >= 0) {
-    localExtensions.value.splice(idx, 1)
-  } else {
-    const exIdx = localExcludeExtensions.value.indexOf(ext)
-    if (exIdx >= 0) {
-      localExcludeExtensions.value.splice(exIdx, 1)
-    }
-    localExtensions.value.push(ext)
-  }
-}
-
-function toggleExcludeExtension(ext: string) {
-  const idx = localExcludeExtensions.value.indexOf(ext)
-  if (idx >= 0) {
-    localExcludeExtensions.value.splice(idx, 1)
-  } else {
-    const incIdx = localExtensions.value.indexOf(ext)
-    if (incIdx >= 0) {
-      localExtensions.value.splice(incIdx, 1)
-    }
-    localExcludeExtensions.value.push(ext)
-  }
-}
-
-function applyExtensionFilter() {
-  emit('updateExtensions', [...localExtensions.value], [...localExcludeExtensions.value])
-  showExtensionPanel.value = false
-}
-
-function clearExtensionFilter() {
-  localExtensions.value = []
-  localExcludeExtensions.value = []
-  emit('updateExtensions', [], [])
-  showExtensionPanel.value = false
-}
-
-function getExtensionState(ext: string): 'include' | 'exclude' | 'none' {
-  if (localExtensions.value.includes(ext)) return 'include'
-  if (localExcludeExtensions.value.includes(ext)) return 'exclude'
-  return 'none'
 }
 
 function closeAllPanels() {
@@ -554,11 +498,13 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
+    <!-- FAB 展开状态：2×5 网格布局 - 完全复刻旧项目顺序 -->
     <Transition name="fab-main">
       <div
         v-show="!isCollapsed"
         class="fixed right-4 grid grid-cols-2 gap-3 z-50 top-[7rem] transition-all duration-300"
       >
+        <!-- 行1: 导出（琥珀）| 导入（靛蓝）-->
         <button
           class="fab-btn bg-white hover:bg-amber-50 text-amber-600 border border-amber-200"
           title="导出数据"
@@ -566,7 +512,6 @@ onBeforeUnmount(() => {
         >
           <Download class="w-6 h-6" />
         </button>
-
         <button
           class="fab-btn bg-white hover:bg-indigo-50 text-indigo-600 border border-indigo-200"
           title="导入数据"
@@ -575,98 +520,7 @@ onBeforeUnmount(() => {
           <Upload class="w-6 h-6" />
         </button>
 
-        <button
-          :class="[
-            'fab-btn border',
-            isHQMode
-              ? 'bg-cyan-100 text-cyan-700 border-cyan-300'
-              : 'bg-white hover:bg-cyan-50 text-cyan-600 border-cyan-200'
-          ]"
-          title="HQ 高清模式（优先加载原图）"
-          @click="toggleHQMode"
-        >
-          <Zap class="w-6 h-6" />
-          <div
-            v-if="isHQMode"
-            class="absolute top-3 right-3 w-2 h-2 bg-cyan-500 rounded-full"
-          />
-        </button>
-
-        <button
-          class="fab-btn bg-white hover:bg-orange-50 text-orange-600 border border-orange-200"
-          title="排序方式"
-          @click.stop="toggleSortPanel"
-        >
-          <ArrowUpDown class="w-6 h-6" />
-        </button>
-
-        <button
-          :class="[
-            'fab-btn border',
-            isTrashMode
-              ? 'bg-red-50 text-red-600 border-red-300'
-              : 'bg-white hover:bg-red-50 text-slate-400 border-slate-200'
-          ]"
-          title="显示回收站内容"
-          @click="toggleTrashMode"
-        >
-          <Trash2 class="w-6 h-6" />
-          <div
-            v-if="isTrashMode"
-            class="absolute top-3 right-3 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"
-          />
-        </button>
-
-        <button
-          class="fab-btn bg-emerald-500 hover:bg-emerald-600 text-white"
-          title="上传新图片"
-          @click="emit('upload')"
-        >
-          <ImagePlus class="w-7 h-7" />
-        </button>
-
-        <div class="relative group">
-          <button
-            class="fab-btn bg-blue-600 hover:bg-blue-700 text-white z-20 relative"
-            title="执行搜索"
-            @click="emit('search')"
-          >
-            <Search class="w-7 h-7" />
-          </button>
-
-          <button
-            class="fab-satellite -top-2 -left-2 bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-blue-600"
-            title="折叠悬浮按钮组"
-            @click="toggleCollapse"
-          >
-            <ChevronsRight class="w-4 h-4" />
-          </button>
-
-          <button
-            class="fab-satellite -top-2 -right-2 bg-red-50 text-red-500 hover:bg-red-100"
-            title="清空标签"
-            @click="emit('clear')"
-          >
-            <X class="w-4 h-4" />
-          </button>
-
-          <button
-            :class="[
-              'fab-satellite -bottom-2 -right-2',
-              isExpansionEnabled
-                ? 'bg-green-100 text-green-600 hover:bg-green-200'
-                : 'bg-white text-slate-400 hover:bg-slate-100'
-            ]"
-            :title="isExpansionEnabled ? '同义词膨胀：已开启' : '同义词膨胀：已关闭'"
-            @click="toggleExpansion"
-          >
-            <TreePine class="w-4 h-4" />
-            <div v-if="!isExpansionEnabled" class="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div class="w-5 h-0.5 bg-red-500 rotate-45 rounded-full" />
-            </div>
-          </button>
-        </div>
-
+        <!-- 行2: 标签数量（青色）| 临时标签（紫色）-->
         <button
           :class="[
             'fab-btn border',
@@ -685,7 +539,6 @@ onBeforeUnmount(() => {
             {{ appliedRangeText }}
           </span>
         </button>
-
         <div class="relative">
           <button
             :class="[
@@ -720,91 +573,93 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
+        <!-- 行3: 排序（灰色）| HQ模式（灰/蓝色）-->
         <button
-          class="fab-btn bg-amber-100 hover:bg-amber-200 text-amber-700 border border-amber-300"
-          title="同义词规则树"
-          @click="emit('openRules')"
+          class="fab-btn bg-white hover:bg-slate-50 text-slate-600 border border-slate-200"
+          title="排序方式"
+          @click.stop="toggleSortPanel"
         >
-          <TreeDeciduous class="w-6 h-6" />
+          <ArrowUpDown class="w-6 h-6" />
+        </button>
+        <button
+          :class="[
+            'fab-btn border font-bold text-sm',
+            isHQMode
+              ? 'bg-blue-50 text-blue-600 border-blue-300 hover:bg-blue-100'
+              : 'bg-white hover:bg-slate-50 text-slate-400 border-slate-200'
+          ]"
+          title="HQ 高清模式（优先加载原图）"
+          @click="toggleHQMode"
+        >
+          HQ
         </button>
 
-        <div class="relative">
-          <button
-            :class="[
-              'fab-btn border',
-              isExtensionFilterActive
-                ? 'bg-teal-100 text-teal-700 border-teal-300'
-                : 'bg-white hover:bg-teal-50 text-teal-600 border-teal-200'
-            ]"
-            title="扩展名筛选"
-            @click.stop="toggleExtensionPanel"
-          >
-            <FileType class="w-6 h-6" />
-            <span
-              v-if="isExtensionFilterActive"
-              class="fab-badge bg-teal-500 text-white"
-            >
-              {{ localExtensions.length + localExcludeExtensions.length }}
-            </span>
-          </button>
-          <div
-            v-if="showExtensionPanel"
-            class="absolute right-full mr-3 top-0 bg-white rounded-2xl shadow-2xl border p-5 min-w-[280px] z-50"
-            style="box-shadow: 0 20px 40px rgba(0,0,0,0.2);"
-            @click.stop
-          >
-            <div class="text-base font-semibold text-slate-800 mb-4 text-center">扩展名筛选</div>
-            <div class="text-xs text-slate-500 mb-3 text-center">点击选中，双击排除</div>
-            <div class="grid grid-cols-3 gap-2 mb-4">
-              <button
-                v-for="ext in AVAILABLE_EXTENSIONS"
-                :key="ext"
-                :class="[
-                  'px-3 py-2 text-sm font-medium rounded-lg border-2 transition-all',
-                  getExtensionState(ext) === 'include'
-                    ? 'bg-teal-100 text-teal-700 border-teal-400'
-                    : getExtensionState(ext) === 'exclude'
-                      ? 'bg-red-100 text-red-600 border-red-400'
-                      : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-teal-300'
-                ]"
-                @click="toggleExtension(ext)"
-                @dblclick.prevent="toggleExcludeExtension(ext)"
-              >
-                .{{ ext }}
-              </button>
-            </div>
-            <div class="flex gap-3">
-              <button
-                class="flex-1 px-4 py-2.5 text-sm bg-slate-100 text-slate-600 rounded-[10px] hover:bg-slate-200 font-medium transition"
-                @click="clearExtensionFilter"
-              >
-                重置
-              </button>
-              <button
-                class="flex-1 px-4 py-2.5 text-sm bg-teal-500 text-white rounded-[10px] hover:bg-teal-600 font-medium transition"
-                @click="applyExtensionFilter"
-              >
-                应用
-              </button>
-            </div>
-          </div>
-        </div>
-
+        <!-- 行4: 回收站（灰/红色）| 上传（翠绿）-->
         <button
           :class="[
             'fab-btn border',
-            isBatchMode
-              ? 'bg-indigo-100 text-indigo-700 border-indigo-300'
-              : 'bg-white hover:bg-indigo-50 text-indigo-600 border-indigo-200'
+            isTrashMode
+              ? 'bg-red-50 text-red-500 border-red-300 hover:bg-red-100'
+              : 'bg-white hover:bg-slate-50 text-slate-400 border-slate-200'
           ]"
-          title="批量编辑模式"
-          @click="emit('toggleBatch')"
+          title="显示回收站内容"
+          @click="toggleTrashMode"
         >
-          <CheckSquare class="w-6 h-6" />
-          <div
-            v-if="isBatchMode"
-            class="absolute top-3 right-3 w-2.5 h-2.5 bg-indigo-500 rounded-full border-2 border-white"
-          />
+          <Trash2 class="w-6 h-6" />
+        </button>
+        <button
+          class="fab-btn bg-emerald-500 hover:bg-emerald-600 text-white"
+          title="上传新图片"
+          @click="emit('upload')"
+        >
+          <ImagePlus class="w-6 h-6" />
+        </button>
+
+        <!-- 行5: 搜索（蓝色+卫星）| 规则树（绿色）-->
+        <div class="relative group">
+          <button
+            class="fab-btn bg-blue-600 hover:bg-blue-700 text-white z-20 relative"
+            title="执行搜索"
+            @click="emit('search')"
+          >
+            <Search class="w-6 h-6" />
+          </button>
+          <!-- 卫星按钮：左上-折叠 -->
+          <button
+            class="fab-satellite -top-2 -left-2 bg-white text-slate-500 hover:bg-slate-100 border border-slate-200"
+            title="折叠悬浮按钮组"
+            @click="toggleCollapse"
+          >
+            <ChevronsRight class="w-4 h-4" />
+          </button>
+          <!-- 卫星按钮：右上-清空 -->
+          <button
+            class="fab-satellite -top-2 -right-2 bg-white text-red-500 hover:bg-red-50 border border-slate-200"
+            title="清空标签"
+            @click="emit('clear')"
+          >
+            <X class="w-4 h-4" />
+          </button>
+          <!-- 卫星按钮：右下-刷新 -->
+          <button
+            class="fab-satellite -bottom-2 -right-2 bg-white text-green-500 hover:bg-green-50 border border-slate-200"
+            title="刷新搜索"
+            @click="emit('refresh')"
+          >
+            <RefreshCw class="w-4 h-4" />
+          </button>
+        </div>
+        <button
+          :class="[
+            'fab-btn border',
+            isExpansionEnabled
+              ? 'bg-green-50 text-yellow-600 border-yellow-300 hover:bg-yellow-50'
+              : 'bg-white hover:bg-green-50 text-green-600 border-green-200'
+          ]"
+          title="规则树（同义词膨胀）"
+          @click="emit('openRules')"
+        >
+          <TreePine class="w-6 h-6" />
         </button>
       </div>
     </Transition>
@@ -822,20 +677,13 @@ onBeforeUnmount(() => {
       >
         <div class="fab-mini-bg">
           <div class="flex flex-col gap-1.5 items-center">
+            <!-- 迷你按钮顺序：展开、清空、刷新、搜索、膨胀、上传 - 复刻旧项目 -->
             <button
               class="fab-mini-btn bg-white hover:bg-blue-50 text-slate-500 hover:text-blue-600 border border-slate-200"
               title="展开"
               @click="toggleCollapse"
             >
               <ChevronsLeft class="w-4 h-4" />
-            </button>
-
-            <button
-              class="fab-mini-btn bg-blue-600 hover:bg-blue-700 text-white"
-              title="搜索"
-              @click="emit('search')"
-            >
-              <Search class="w-4 h-4" />
             </button>
 
             <button
@@ -847,7 +695,7 @@ onBeforeUnmount(() => {
             </button>
 
             <button
-              class="fab-mini-btn bg-white hover:bg-slate-100 text-slate-500 hover:text-blue-600 border border-slate-200"
+              class="fab-mini-btn bg-white hover:bg-green-50 text-slate-500 hover:text-green-600 border border-slate-200"
               title="刷新"
               @click="emit('refresh')"
             >
@@ -855,11 +703,19 @@ onBeforeUnmount(() => {
             </button>
 
             <button
+              class="fab-mini-btn bg-blue-600 hover:bg-blue-700 text-white"
+              title="搜索"
+              @click="emit('search')"
+            >
+              <Search class="w-4 h-4" />
+            </button>
+
+            <button
               :class="[
                 'fab-mini-btn border',
                 isExpansionEnabled
-                  ? 'bg-purple-100 text-purple-600 border-purple-300'
-                  : 'bg-white text-slate-400 border-slate-200 hover:bg-purple-50 hover:text-purple-600'
+                  ? 'bg-green-100 text-green-600 border-green-300'
+                  : 'bg-white text-slate-400 border-slate-200 hover:bg-green-50 hover:text-green-600'
               ]"
               :title="isExpansionEnabled ? '膨胀：开' : '膨胀：关'"
               @click="toggleExpansion"
