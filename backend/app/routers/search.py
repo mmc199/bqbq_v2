@@ -1,9 +1,8 @@
 """
 搜索路由 - 完整迁移旧项目搜索逻辑
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
-from typing import Optional
 from ..database import get_connection
 from ..models.image import SearchRequest, SearchResponse, ImageResponse
 
@@ -78,8 +77,7 @@ def expand_tags_with_rules(tags: list[str]) -> list[str]:
     return list(expanded)
 
 
-@router.post("/search", response_model=SearchResponse)
-async def search_images(request: SearchRequest):
+async def search_images_simple(request: SearchRequest) -> SearchResponse:
     """搜索图片（简化版，兼容新前端）"""
     # 根据 expand 参数决定是否膨胀标签
     if request.expand:
@@ -174,6 +172,18 @@ async def search_images(request: SearchRequest):
             page_size=request.page_size,
             expanded_tags=expanded_include,
         )
+
+
+@router.post("/search")
+async def search_images(request: Request):
+    """搜索图片（兼容旧项目高级搜索/新项目简化搜索）"""
+    data = await request.json()
+    if isinstance(data, dict) and (
+        "keywords" in data or "excludes" in data or "excludes_and" in data
+    ):
+        return await advanced_search(AdvancedSearchRequest(**data))
+
+    return await search_images_simple(SearchRequest(**data))
 
 
 @router.post("/search/advanced")

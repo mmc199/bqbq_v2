@@ -6,50 +6,48 @@
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import {
   Search, RefreshCw, X, Download, Upload, Trash2,
-  TreePine, ImagePlus, ChevronsRight, ChevronsLeft,
-  ArrowUpDown, Plus, Check,
+  TreePine, ImagePlus, ChevronsRight, ChevronsLeft, Loader2,
+  ArrowUpDown,
   Hash, Stamp, FileText
 } from 'lucide-vue-next'
 import * as noUiSlider from 'nouislider'
 import 'nouislider/dist/nouislider.css'
+import TagInput from '@/components/TagInput.vue'
 import { useGlobalStore } from '@/stores/useGlobalStore'
 
 const SLIDER_MAX_VISUAL = 6
 const INFINITY_DISPLAY = '∞'
-const STORAGE_KEY = 'bqbq_fab_mini_position'
+const DEFAULT_MINI_TOP = 256
+const DRAG_THRESHOLD = 5
 
 const props = defineProps<{
   isTrashMode?: boolean
   isExpansionEnabled?: boolean
   isHQMode?: boolean
-  isBatchMode?: boolean
   isTempTagMode?: boolean
   sortBy?: string
   minTags?: number | null
   maxTags?: number | null
   tempTags?: string[]
-  extensions?: string[]
-  excludeExtensions?: string[]
+  expandedOriginal?: number
+  expandedTotal?: number
+  isUploading?: boolean
 }>()
 
 const emit = defineEmits<{
   upload: []
-  openRules: []
   export: []
   import: []
   toggleTrash: [isTrash: boolean]
   toggleExpansion: [enabled: boolean]
   toggleHQ: [enabled: boolean]
-  toggleBatch: []
   toggleTempMode: [enabled: boolean]
-  search: []
+  focusSearch: []
   refresh: []
   clear: []
   updateSort: [sortBy: string]
   updateTagRange: [min: number | null, max: number | null]
   updateTempTags: [tags: string[]]
-  applyTempTags: []
-  updateExtensions: [extensions: string[], excludeExtensions: string[]]
 }>()
 
 const globalStore = useGlobalStore()
@@ -58,29 +56,25 @@ const isExpansionEnabled = computed(() => !!props.isExpansionEnabled)
 const isHQMode = computed(() => !!props.isHQMode)
 
 const isCollapsed = computed({
-  get: () => globalStore.preferences.fabCollapsed,
-  set: (val) => globalStore.updatePreference('fabCollapsed', val)
+  get: () => globalStore.fabCollapsed,
+  set: (val) => globalStore.setFabCollapsed(val)
 })
 
 const showSortMenu = ref(false)
 const showTagCountPanel = ref(false)
 const showTempTagsPanel = ref(false)
-const showExtensionPanel = ref(false)
-const isAnyPanelOpen = computed(() =>
-  showSortMenu.value || showTagCountPanel.value || showTempTagsPanel.value || showExtensionPanel.value
-)
+const sortMenuRef = ref<HTMLElement | null>(null)
+const sortButtonRef = ref<HTMLElement | null>(null)
 
-const sortBy = computed(() => props.sortBy ?? 'time_desc')
+const sortBy = computed(() => props.sortBy ?? 'date_desc')
 
 const sortOptions = [
-  { value: 'time_desc', label: '最新添加', hint: '按添加时间降序' },
-  { value: 'time_asc', label: '最早添加', hint: '按添加时间升序' },
-  { value: 'tags_desc', label: '标签数量多', hint: '按标签数量降序' },
-  { value: 'tags_asc', label: '标签数量少', hint: '按标签数量升序' },
-  { value: 'size_desc', label: '文件体积大', hint: '按文件大小降序' },
-  { value: 'size_asc', label: '文件体积小', hint: '按文件大小升序' },
-  { value: 'resolution_desc', label: '分辨率高', hint: '按分辨率降序' },
-  { value: 'resolution_asc', label: '分辨率低', hint: '按分辨率升序' }
+  { value: 'date_desc', label: '📅 最新添加', hint: '按添加时间降序' },
+  { value: 'date_asc', label: '📅 最早添加', hint: '按添加时间升序' },
+  { value: 'size_desc', label: '💾 文件很大', hint: '按文件大小降序' },
+  { value: 'size_asc', label: '💾 文件很小', hint: '按文件大小升序' },
+  { value: 'resolution_desc', label: '📐 高分辨率', hint: '按分辨率降序' },
+  { value: 'resolution_asc', label: '📐 低分辨率', hint: '按分辨率升序' }
 ]
 
 const appliedMin = computed(() => (typeof props.minTags === 'number' && props.minTags > 0 ? props.minTags : 0))
@@ -93,6 +87,13 @@ const normalizedMaxPayload = computed<number | null>(() =>
 )
 const isTagRangeApplied = computed(() => appliedMin.value > 0 || appliedMax.value >= 0)
 const appliedRangeText = computed(() => `${appliedMin.value}-${appliedMax.value < 0 ? INFINITY_DISPLAY : appliedMax.value}`)
+
+const expandedOriginal = computed(() => props.expandedOriginal ?? 0)
+const expandedTotal = computed(() => props.expandedTotal ?? 0)
+const showExpansionBadge = computed(() =>
+  isExpansionEnabled.value && expandedTotal.value > expandedOriginal.value && expandedOriginal.value > 0
+)
+const expansionBadgeText = computed(() => `${expandedOriginal.value}→${expandedTotal.value}`)
 
 const localMinTags = ref(appliedMin.value)
 const localMaxTags = ref(appliedMax.value)
@@ -207,8 +208,7 @@ function handleMaxInputChange() {
   syncSliderHandles()
 }
 
-const tempTagInput = ref('')
-const tempTagInputEl = ref<HTMLInputElement | null>(null)
+const tempTagInputRef = ref<InstanceType<typeof TagInput> | null>(null)
 const localTempTags = ref<string[]>([...(props.tempTags || [])])
 
 watch(
@@ -219,45 +219,41 @@ watch(
   { immediate: true }
 )
 
-const localExtensions = ref<string[]>([...(props.extensions || [])])
-const localExcludeExtensions = ref<string[]>([...(props.excludeExtensions || [])])
-
-watch(
-  () => props.extensions,
-  (exts) => {
-    localExtensions.value = [...(exts || [])]
-  },
-  { immediate: true }
-)
-
-watch(
-  () => props.excludeExtensions,
-  (exts) => {
-    localExcludeExtensions.value = [...(exts || [])]
-  },
-  { immediate: true }
-)
+watch(localTempTags, (tags) => {
+  emit('updateTempTags', [...tags])
+}, { deep: true })
 
 const isDragging = ref(false)
+const hasMoved = ref(false)
 const dragStartY = ref(0)
 const dragStartTop = ref(0)
-const miniStripTop = ref(112)
+const miniStripTop = ref(DEFAULT_MINI_TOP)
+const miniStripRef = ref<HTMLElement | null>(null)
+const dragHandleRef = ref<HTMLElement | null>(null)
 
 function handlePointerDown(e: PointerEvent) {
-  if ((e.target as HTMLElement).closest('button')) return
+  const handle = (e.target as HTMLElement).closest('[data-drag-handle]') as HTMLElement | null
+  if (!handle) return
   isDragging.value = true
+  hasMoved.value = false
   dragStartY.value = e.clientY
   dragStartTop.value = miniStripTop.value
-  ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+  dragHandleRef.value = handle
+  handle.setPointerCapture(e.pointerId)
   e.preventDefault()
 }
 
 function handlePointerMove(e: PointerEvent) {
   if (!isDragging.value) return
   const deltaY = e.clientY - dragStartY.value
+  if (!hasMoved.value && Math.abs(deltaY) <= DRAG_THRESHOLD) return
+  if (!hasMoved.value) {
+    hasMoved.value = true
+  }
   let newTop = dragStartTop.value + deltaY
-  const minTop = 64
-  const maxTop = window.innerHeight - 250
+  const minTop = 80
+  const stripHeight = miniStripRef.value?.offsetHeight ?? 200
+  const maxTop = window.innerHeight - stripHeight - 16
   newTop = Math.max(minTop, Math.min(maxTop, newTop))
   miniStripTop.value = newTop
 }
@@ -265,8 +261,16 @@ function handlePointerMove(e: PointerEvent) {
 function handlePointerUp(e: PointerEvent) {
   if (!isDragging.value) return
   isDragging.value = false
-  localStorage.setItem(STORAGE_KEY, miniStripTop.value.toString())
-  ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
+  if (hasMoved.value) {
+    globalStore.setFabMiniPosition(Math.round(miniStripTop.value))
+  } else {
+    toggleCollapse()
+  }
+  hasMoved.value = false
+  if (dragHandleRef.value) {
+    dragHandleRef.value.releasePointerCapture(e.pointerId)
+  }
+  dragHandleRef.value = null
 }
 
 function toggleCollapse() {
@@ -312,7 +316,7 @@ function toggleTempPanel() {
   closeAllPanels()
   showTempTagsPanel.value = next
   if (next) {
-    nextTick(() => tempTagInputEl.value?.focus())
+    nextTick(() => tempTagInputRef.value?.focus())
   }
 }
 
@@ -321,69 +325,57 @@ function selectSort(value: string) {
   showSortMenu.value = false
 }
 
-function addTempTag() {
-  const tag = tempTagInput.value.trim()
-  if (tag && !localTempTags.value.includes(tag)) {
-    localTempTags.value.push(tag)
-    emit('updateTempTags', [...localTempTags.value])
-  }
-  tempTagInput.value = ''
-}
-
-function removeTempTag(index: number) {
-  localTempTags.value.splice(index, 1)
-  emit('updateTempTags', [...localTempTags.value])
-}
-
-function applyTempTags() {
-  if (localTempTags.value.length === 0) return
-  emit('applyTempTags')
-}
-
 function clearTempTags() {
   localTempTags.value = []
-  emit('updateTempTags', [])
 }
 
 function closeAllPanels() {
   showSortMenu.value = false
   showTagCountPanel.value = false
   showTempTagsPanel.value = false
-  showExtensionPanel.value = false
+}
+
+function handleSortOutsideClick(e: MouseEvent) {
+  const target = e.target as Node
+  if (sortMenuRef.value?.contains(target)) return
+  if (sortButtonRef.value?.contains(target)) return
+  showSortMenu.value = false
 }
 
 onMounted(() => {
   initTagSlider()
-  const saved = localStorage.getItem(STORAGE_KEY)
-  if (saved) {
-    const pos = parseInt(saved, 10)
-    if (!Number.isNaN(pos) && pos >= 64 && pos <= window.innerHeight - 200) {
-      miniStripTop.value = pos
-    }
+  const saved = globalStore.fabMiniPosition
+  if (typeof saved === 'number' && !Number.isNaN(saved)) {
+    miniStripTop.value = saved
+  } else {
+    miniStripTop.value = DEFAULT_MINI_TOP
   }
 })
 
 watch(tagSliderRef, () => initTagSlider())
+
+watch(showSortMenu, (val) => {
+  if (val) {
+    document.addEventListener('click', handleSortOutsideClick)
+  } else {
+    document.removeEventListener('click', handleSortOutsideClick)
+  }
+})
 
 onBeforeUnmount(() => {
   if (sliderInstance.value) {
     sliderInstance.value.destroy()
     sliderInstance.value = null
   }
+  document.removeEventListener('click', handleSortOutsideClick)
 })
 </script>
 
 <template>
   <div>
     <div
-      v-if="isAnyPanelOpen"
-      class="fixed inset-0 z-40"
-      @click="closeAllPanels"
-    />
-
-    <div
       v-show="showTagCountPanel"
-      class="fixed top-24 right-44 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-50 w-52 origin-top-right flex flex-col gap-3"
+      class="fixed top-24 right-44 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 w-52 origin-top-right flex flex-col gap-3"
       @click.stop
     >
       <div class="flex items-center justify-between gap-1">
@@ -403,13 +395,11 @@ onBeforeUnmount(() => {
           title="最多标签数 (∞ 表示无限制)"
           @change="handleMaxInputChange"
         />
-        <button
-          class="text-slate-400 hover:text-red-500 text-base leading-none"
-          title="关闭"
+        <span
+          class="cursor-pointer text-slate-400 hover:text-red-500 text-base ml-1"
+          title="关闭标签数量筛选面板"
           @click="showTagCountPanel = false"
-        >
-          &times;
-        </button>
+        >&times;</span>
       </div>
       <div
         ref="tagSliderRef"
@@ -423,271 +413,248 @@ onBeforeUnmount(() => {
 
     <div
       v-show="showTempTagsPanel"
-      class="fixed top-24 right-44 bg-white rounded-xl shadow-2xl border border-slate-200 p-6 z-50 w-64 origin-top-right flex flex-col gap-4"
+      class="fixed top-24 right-44 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 w-64 origin-top-right flex flex-col gap-2"
       @click.stop
     >
-      <div class="flex items-center justify-between">
-        <div class="text-base font-semibold text-slate-800">临时标签</div>
+      <div class="text-xs font-bold text-slate-500 mb-1 flex items-center gap-2">
+        <span id="temp-panel-title" title="在此输入标签，然后点击图片快速粘贴">临时标签 (点击粘贴到图片)</span>
         <button
-          class="w-7 h-7 text-slate-400 hover:text-red-500 rounded-full hover:bg-red-50 transition"
-          @click="showTempTagsPanel = false"
-        >
-          <X class="w-4 h-4 mx-auto" />
-        </button>
-      </div>
-      <div class="flex gap-2">
-        <input
-          ref="tempTagInputEl"
-          v-model="tempTagInput"
-          placeholder="输入标签..."
-          class="flex-1 px-4 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100 transition-all"
-          @keydown.enter.prevent="addTempTag"
-        />
-        <button
-          class="px-4 py-2.5 bg-purple-500 text-white rounded-xl hover:bg-purple-600 transition"
-          @click="addTempTag"
-        >
-          <Plus class="w-5 h-5" />
-        </button>
-      </div>
-      <div class="flex flex-wrap gap-2 p-3 bg-slate-50 border-2 border-slate-200 rounded-xl min-h-[48px] max-h-[120px] overflow-y-auto">
-        <span
-          v-for="(tag, index) in localTempTags"
-          :key="`temp-${tag}-${index}`"
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-100 text-purple-700 text-sm font-medium rounded-full border border-purple-200"
-        >
-          {{ tag }}
-          <button class="hover:text-purple-900 transition-colors" @click="removeTempTag(index)">
-            <X class="w-3.5 h-3.5" />
-          </button>
-        </span>
-        <span v-if="localTempTags.length === 0" class="text-sm text-slate-400 italic">暂无临时标签</span>
-      </div>
-      <div class="flex gap-3">
-        <button
-          class="flex-1 px-4 py-2.5 text-sm bg-slate-100 text-slate-600 rounded-[10px] hover:bg-slate-200 font-medium transition"
+          class="text-xs text-blue-600 hover:underline"
+          title="清空所有临时标签"
           @click="clearTempTags"
         >
           清空
         </button>
-        <button
-          class="flex-1 px-4 py-2.5 text-sm bg-purple-500 text-white rounded-[10px] hover:bg-purple-600 font-medium transition flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="localTempTags.length === 0"
-          @click="applyTempTags"
-        >
-          <Check class="w-4 h-4" />
-          应用
-        </button>
+        <span
+          class="cursor-pointer hover:text-red-500 ml-auto text-base leading-none"
+          title="隐藏临时标签面板"
+          @click="showTempTagsPanel = false"
+        >&minus;</span>
       </div>
+      <TagInput
+        ref="tempTagInputRef"
+        v-model="localTempTags"
+        suggestions-id="tag-suggestions"
+        placeholder="输入临时标签..."
+        theme="purple"
+        :enable-excludes="false"
+        container-class="flex flex-wrap gap-1 bg-slate-50 p-2 rounded border border-slate-200 min-h-[40px] cursor-text"
+      />
     </div>
 
     <div
       v-show="showSortMenu"
-      class="fixed top-24 right-44 bg-white rounded-xl shadow-xl border border-slate-200 py-2 z-50 w-40 origin-top-right flex flex-col"
+      class="fixed top-24 right-44 bg-white rounded-xl shadow-xl border border-slate-200 py-2 z-40 w-40 origin-top-right flex flex-col"
+      ref="sortMenuRef"
       @click.stop
     >
       <button
         v-for="opt in sortOptions"
         :key="opt.value"
         class="sort-option px-4 py-2 text-sm text-left transition-colors"
-        :class="sortBy === opt.value ? 'bg-blue-50 text-blue-600 font-bold' : 'text-slate-700 hover:bg-slate-50'"
+        :class="sortBy === opt.value ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600 hover:bg-slate-100'"
         @click="selectSort(opt.value)"
       >
-        <div class="font-medium">{{ opt.label }}</div>
-        <div class="text-xs text-slate-400">{{ opt.hint }}</div>
+        {{ opt.label }}
       </button>
     </div>
 
-    <!-- FAB 展开状态：2×5 网格布局 - 完全复刻旧项目顺序 -->
+    <!-- FAB 展开状态：2×5 网格布局（旧项目） -->
     <Transition name="fab-main">
       <div
         v-show="!isCollapsed"
         class="fixed right-4 grid grid-cols-2 gap-3 z-50 top-[7rem] transition-all duration-300"
       >
-        <!-- 行1: 导出（琥珀）| 导入（靛蓝）-->
+        <!-- Export JSON -->
         <button
-          class="fab-btn bg-white hover:bg-amber-50 text-amber-600 border border-amber-200"
+          class="w-14 h-14 bg-white hover:bg-amber-50 text-amber-600 border border-amber-200 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative group"
           title="导出数据"
           @click="emit('export')"
         >
           <Download class="w-6 h-6" />
+          <span class="absolute right-full mr-3 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap pointer-events-none">导出JSON</span>
         </button>
+
+        <!-- Import JSON -->
         <button
-          class="fab-btn bg-white hover:bg-indigo-50 text-indigo-600 border border-indigo-200"
+          class="w-14 h-14 bg-white hover:bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative group"
           title="导入数据"
           @click="emit('import')"
         >
           <Upload class="w-6 h-6" />
         </button>
 
-        <!-- 行2: 标签数量（青色）| 临时标签（紫色）-->
+        <!-- Tag Count Filter -->
         <button
-          :class="[
-            'fab-btn border',
-            isTagRangeApplied
-              ? 'bg-cyan-100 text-cyan-700 border-cyan-300'
-              : 'bg-white hover:bg-cyan-50 text-cyan-600 border-cyan-200'
-          ]"
+          class="w-14 h-14 bg-white hover:bg-cyan-50 text-cyan-600 border border-cyan-200 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center flex-col relative group"
           title="标签数量筛选"
           @click.stop="toggleTagCountPanel"
         >
-          <Hash class="w-6 h-6" />
+          <Hash class="w-5 h-5" />
           <span
-            v-if="isTagRangeApplied"
-            class="fab-badge bg-cyan-500 text-white"
+            v-show="isTagRangeApplied"
+            class="absolute -top-1 -right-1 bg-cyan-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full"
           >
             {{ appliedRangeText }}
           </span>
         </button>
-        <div class="relative">
+
+        <!-- Temp Tags Trigger + Satellite -->
+        <div class="relative group">
           <button
-            :class="[
-              'fab-btn border',
-              props.isTempTagMode
-                ? 'bg-purple-100 text-purple-700 border-purple-300'
-                : 'bg-white hover:bg-purple-50 text-purple-600 border-purple-100'
-            ]"
-            title="临时标签/批量打标"
+            class="w-14 h-14 bg-white hover:bg-purple-50 text-purple-600 border border-purple-100 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative z-20"
+            :title="props.isTempTagMode ? '批量打标粘贴模式：已开启（点击关闭）' : '批量打标粘贴模式：已关闭（点击开启）'"
             @click="toggleTempMode"
           >
             <Stamp class="w-6 h-6" />
             <div
-              v-if="!props.isTempTagMode"
+              v-show="!props.isTempTagMode"
               class="absolute inset-0 flex items-center justify-center pointer-events-none"
             >
-              <div class="w-10 h-0.5 bg-red-500 rotate-45 rounded-full shadow-sm" />
+              <div class="w-10 h-0.5 bg-red-500 rotate-45 rounded-full shadow-sm"></div>
             </div>
-            <span
-              v-if="localTempTags.length > 0"
-              class="fab-badge bg-purple-500 text-white"
-            >
-              {{ localTempTags.length }}
-            </span>
+            <span class="absolute right-full mr-3 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap pointer-events-none">批量打标</span>
           </button>
           <button
-            class="fab-satellite -bottom-2 -left-2 bg-purple-50 text-purple-500 hover:bg-purple-100"
-            title="显示临时标签面板"
+            class="absolute -top-2 -right-2 w-8 h-8 bg-white text-slate-600 border border-slate-200 rounded-full shadow-md flex items-center justify-center hover:bg-purple-50 hover:text-purple-600 transition-all z-30"
+            title="显示/隐藏临时标签面板"
             @click.stop="toggleTempPanel"
           >
             <FileText class="w-4 h-4" />
           </button>
         </div>
 
-        <!-- 行3: 排序（灰色）| HQ模式（灰/蓝色）-->
+        <!-- Sort Trigger -->
         <button
-          class="fab-btn bg-white hover:bg-slate-50 text-slate-600 border border-slate-200"
-          title="排序方式"
+          ref="sortButtonRef"
+          class="w-14 h-14 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative group"
+          title="排序"
           @click.stop="toggleSortPanel"
         >
           <ArrowUpDown class="w-6 h-6" />
         </button>
+
+        <!-- HQ Toggle -->
         <button
           :class="[
-            'fab-btn border font-bold text-sm',
-            isHQMode
-              ? 'bg-blue-50 text-blue-600 border-blue-300 hover:bg-blue-100'
-              : 'bg-white hover:bg-slate-50 text-slate-400 border-slate-200'
+            'w-14 h-14 bg-white hover:bg-slate-50 border border-slate-200 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center flex-col relative group',
+            isHQMode ? 'text-blue-600 border-blue-200' : 'text-slate-400'
           ]"
-          title="HQ 高清模式（优先加载原图）"
+          title="HQ 原图模式"
           @click="toggleHQMode"
         >
-          HQ
+          <span class="text-[10px] font-black leading-none mb-0.5">HQ</span>
+          <div :class="['w-2 h-2 rounded-full transition-colors', isHQMode ? 'bg-blue-600' : 'bg-slate-300']"></div>
         </button>
 
-        <!-- 行4: 回收站（灰/红色）| 上传（翠绿）-->
+        <!-- Trash Bin Toggle -->
         <button
           :class="[
-            'fab-btn border',
-            isTrashMode
-              ? 'bg-red-50 text-red-500 border-red-300 hover:bg-red-100'
-              : 'bg-white hover:bg-slate-50 text-slate-400 border-slate-200'
+            'w-14 h-14 bg-white hover:bg-red-50 border border-slate-200 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative group',
+            isTrashMode ? 'text-red-500 bg-red-50 border-red-200' : 'text-slate-400'
           ]"
           title="显示回收站内容"
           @click="toggleTrashMode"
         >
           <Trash2 class="w-6 h-6" />
+          <div v-show="isTrashMode" class="absolute top-3 right-3 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></div>
         </button>
+
+        <!-- Upload -->
         <button
-          class="fab-btn bg-emerald-500 hover:bg-emerald-600 text-white"
+          class="w-14 h-14 bg-emerald-500 hover:bg-emerald-600 text-white rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center group relative"
           title="上传新图片"
           @click="emit('upload')"
         >
-          <ImagePlus class="w-6 h-6" />
+          <Loader2 v-if="props.isUploading" class="w-7 h-7 animate-spin" />
+          <ImagePlus v-else class="w-7 h-7" />
         </button>
 
-        <!-- 行5: 搜索（蓝色+卫星）| 规则树（绿色）-->
+        <!-- Main Search + Satellites -->
         <div class="relative group">
           <button
-            class="fab-btn bg-blue-600 hover:bg-blue-700 text-white z-20 relative"
+            class="w-14 h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl shadow-xl hover:shadow-2xl hover:scale-105 transition-all flex items-center justify-center z-20 relative"
             title="执行搜索"
-            @click="emit('search')"
+            @click="emit('focusSearch')"
           >
-            <Search class="w-6 h-6" />
+            <Search class="w-7 h-7" />
           </button>
-          <!-- 卫星按钮：左上-折叠 -->
+
           <button
-            class="fab-satellite -top-2 -left-2 bg-white text-slate-500 hover:bg-slate-100 border border-slate-200"
+            class="absolute -top-2 -left-2 w-8 h-8 bg-white text-slate-600 border border-slate-200 rounded-full shadow-md flex items-center justify-center hover:bg-slate-100 hover:text-blue-600 transition-all z-30"
             title="折叠悬浮按钮组"
             @click="toggleCollapse"
           >
             <ChevronsRight class="w-4 h-4" />
           </button>
-          <!-- 卫星按钮：右上-清空 -->
+
           <button
-            class="fab-satellite -top-2 -right-2 bg-white text-red-500 hover:bg-red-50 border border-slate-200"
+            class="absolute -top-2 -right-2 w-8 h-8 bg-white text-slate-600 border border-slate-200 rounded-full shadow-md flex items-center justify-center hover:bg-red-50 hover:text-red-500 transition-all z-30 group-hover:opacity-100"
             title="清空标签"
             @click="emit('clear')"
           >
             <X class="w-4 h-4" />
           </button>
-          <!-- 卫星按钮：右下-刷新 -->
+
           <button
-            class="fab-satellite -bottom-2 -right-2 bg-white text-green-500 hover:bg-green-50 border border-slate-200"
-            title="刷新搜索"
+            class="absolute -bottom-2 -right-2 w-8 h-8 bg-white text-slate-600 border border-slate-200 rounded-full shadow-md flex items-center justify-center hover:bg-slate-100 hover:text-blue-600 transition-all z-30"
+            title="刷新"
             @click="emit('refresh')"
           >
             <RefreshCw class="w-4 h-4" />
           </button>
         </div>
+
+        <!-- Expansion / Rules -->
         <button
           :class="[
-            'fab-btn border',
+            'w-14 h-14 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative group border',
             isExpansionEnabled
-              ? 'bg-green-50 text-yellow-600 border-yellow-300 hover:bg-yellow-50'
-              : 'bg-white hover:bg-green-50 text-green-600 border-green-200'
+              ? 'bg-green-100 hover:bg-green-50 text-green-700 border-green-400'
+              : 'bg-white hover:bg-green-50 text-yellow-600 border-yellow-300'
           ]"
-          title="规则树（同义词膨胀）"
-          @click="emit('openRules')"
+          :title="isExpansionEnabled ? '同义词膨胀：已开启（点击关闭）' : '同义词膨胀：已关闭（点击开启）'"
+          @click="toggleExpansion"
         >
           <TreePine class="w-6 h-6" />
+          <div v-show="!isExpansionEnabled" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div class="w-10 h-0.5 bg-red-500 rotate-45 rounded-full shadow-sm"></div>
+          </div>
+          <span
+            v-show="showExpansionBadge"
+            class="absolute -top-1 -right-1 bg-purple-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap"
+            :title="`原始 ${expandedOriginal} 个标签已膨胀为 ${expandedTotal} 个关键词`"
+          >
+            {{ expansionBadgeText }}
+          </span>
         </button>
       </div>
     </Transition>
 
+    <!-- Collapsed FAB Mini Strip -->
     <Transition name="fab-mini">
       <div
         v-show="isCollapsed"
-        class="fab-mini-strip"
-        :class="{ 'cursor-grabbing': isDragging, 'cursor-grab': !isDragging }"
-        :style="{ top: miniStripTop + 'px' }"
+        class="fixed z-50"
+        :style="{ top: miniStripTop + 'px', right: '0px' }"
+        ref="miniStripRef"
         @pointerdown="handlePointerDown"
         @pointermove="handlePointerMove"
         @pointerup="handlePointerUp"
         @pointercancel="handlePointerUp"
       >
-        <div class="fab-mini-bg">
-          <div class="flex flex-col gap-1.5 items-center">
-            <!-- 迷你按钮顺序：展开、清空、刷新、搜索、膨胀、上传 - 复刻旧项目 -->
+        <div class="bg-white/80 backdrop-blur-sm border-l border-y border-slate-200 rounded-l-lg shadow-lg py-2 pl-1" style="width: 24px;">
+          <div class="flex flex-col gap-1.5" style="margin-left: -16px;">
             <button
-              class="fab-mini-btn bg-white hover:bg-blue-50 text-slate-500 hover:text-blue-600 border border-slate-200"
-              title="展开"
-              @click="toggleCollapse"
+              class="w-8 h-8 bg-white hover:bg-blue-50 text-slate-500 hover:text-blue-600 border border-slate-200 rounded-full shadow-md flex items-center justify-center cursor-grab active:cursor-grabbing touch-none"
+              title="拖拽调整位置 / 点击展开"
+              data-drag-handle
             >
               <ChevronsLeft class="w-4 h-4" />
             </button>
 
             <button
-              class="fab-mini-btn bg-white hover:bg-red-50 text-slate-500 hover:text-red-500 border border-slate-200"
+              class="w-8 h-8 bg-white hover:bg-red-50 text-slate-500 hover:text-red-500 border border-slate-200 rounded-full shadow-md flex items-center justify-center"
               title="清空标签"
               @click="emit('clear')"
             >
@@ -695,7 +662,7 @@ onBeforeUnmount(() => {
             </button>
 
             <button
-              class="fab-mini-btn bg-white hover:bg-green-50 text-slate-500 hover:text-green-600 border border-slate-200"
+              class="w-8 h-8 bg-white hover:bg-slate-100 text-slate-500 hover:text-blue-600 border border-slate-200 rounded-full shadow-md flex items-center justify-center"
               title="刷新"
               @click="emit('refresh')"
             >
@@ -703,35 +670,11 @@ onBeforeUnmount(() => {
             </button>
 
             <button
-              class="fab-mini-btn bg-blue-600 hover:bg-blue-700 text-white"
+              class="w-8 h-8 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-md flex items-center justify-center"
               title="搜索"
-              @click="emit('search')"
+              @click="emit('focusSearch')"
             >
               <Search class="w-4 h-4" />
-            </button>
-
-            <button
-              :class="[
-                'fab-mini-btn border',
-                isExpansionEnabled
-                  ? 'bg-green-100 text-green-600 border-green-300'
-                  : 'bg-white text-slate-400 border-slate-200 hover:bg-green-50 hover:text-green-600'
-              ]"
-              :title="isExpansionEnabled ? '膨胀：开' : '膨胀：关'"
-              @click="toggleExpansion"
-            >
-              <TreePine class="w-4 h-4" />
-              <div v-if="!isExpansionEnabled" class="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div class="w-4 h-0.5 bg-red-500 rotate-45 rounded-full" />
-              </div>
-            </button>
-
-            <button
-              class="fab-mini-btn bg-emerald-500 hover:bg-emerald-600 text-white"
-              title="上传"
-              @click="emit('upload')"
-            >
-              <ImagePlus class="w-4 h-4" />
             </button>
           </div>
         </div>

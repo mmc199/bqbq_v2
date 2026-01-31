@@ -6,15 +6,88 @@ import io
 from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
-from ..database import get_connection, get_rules_version
+from pydantic import BaseModel
+from typing import Union
+from ..database import get_connection, get_rules_version, increment_rules_version
 
 router = APIRouter()
+
+
+class CheckMD5Request(BaseModel):
+    md5: str
+    refresh_time: bool = False
+
+
+class UpdateTagsRequest(BaseModel):
+    md5: str
+    tags: Union[list[str], str]
+    client_id: str | None = None
+    base_version: int | None = None
 
 
 @router.get("/version")
 async def get_version():
     """获取当前规则版本"""
     return {"version": get_rules_version()}
+
+
+@router.post("/check_md5")
+async def check_md5_compat(data: CheckMD5Request):
+    """旧项目兼容：/api/check_md5"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, filename FROM images WHERE md5 = ?", (data.md5,))
+        row = cursor.fetchone()
+
+        if row:
+            time_refreshed = False
+            if data.refresh_time:
+                cursor.execute(
+                    "UPDATE images SET created_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (row['id'],)
+                )
+                conn.commit()
+                time_refreshed = True
+
+            return {
+                "exists": True,
+                "id": row['id'],
+                "filename": row['filename'],
+                "time_refreshed": time_refreshed
+            }
+
+        return {"exists": False}
+
+
+@router.post("/update_tags")
+async def update_tags_compat(data: UpdateTagsRequest):
+    """旧项目兼容：/api/update_tags"""
+    tags_list = data.tags if isinstance(data.tags, list) else str(data.tags).split()
+    tags_str = " ".join([t for t in tags_list if t])
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM images WHERE md5 = ?", (data.md5,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="图片不存在")
+
+        if data.base_version is not None and data.client_id is not None:
+            current_version = get_rules_version()
+            if data.base_version != current_version:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
+                )
+
+        cursor.execute("UPDATE images SET tags = ? WHERE md5 = ?", (tags_str, data.md5))
+
+        new_version = increment_rules_version(
+            conn, data.client_id or "legacy", "update_tags", f"md5={data.md5}"
+        )
+        conn.commit()
+
+        return {"success": True, "new_version": new_version}
 
 
 @router.get("/export")
@@ -84,6 +157,12 @@ async def export_data():
                 "Content-Disposition": f"attachment; filename=bqbq_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             }
         )
+
+
+@router.get("/export/all")
+async def export_all_compat():
+    """旧项目兼容：/api/export/all"""
+    return await export_data()
 
 
 @router.post("/import")
@@ -257,6 +336,12 @@ async def import_data(file: UploadFile = File(...)):
         "imported": imported_counts,
         "message": f"导入完成: 新增 {imported_counts['images']} 张图片, 跳过 {imported_counts['skipped_images']} 张"
     }
+
+
+@router.post("/import/all")
+async def import_all_compat(file: UploadFile = File(...)):
+    """旧项目兼容：/api/import/all"""
+    return await import_data(file)
 
 
 @router.get("/stats")

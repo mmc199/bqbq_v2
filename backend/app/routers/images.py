@@ -5,6 +5,7 @@ import base64
 import hashlib
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File
+from pydantic import BaseModel
 from PIL import Image
 import io
 
@@ -13,6 +14,25 @@ from ..database import get_connection, get_rules_version, increment_rules_versio
 from ..models.image import ImageCreate, ImageResponse, ImageUpdate
 
 router = APIRouter()
+
+
+class CheckMD5Request(BaseModel):
+    md5: str
+    refresh_time: bool = False
+
+
+def save_thumbnail(image_bytes: bytes, md5: str) -> None:
+    """生成缩略图（与旧项目一致的命名）"""
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img.thumbnail((settings.thumbnail_max_size, settings.thumbnail_max_size))
+        thumbnails_path = Path(settings.thumbnails_path)
+        thumbnails_path.mkdir(parents=True, exist_ok=True)
+        thumb_path = thumbnails_path / f"{md5}_thumbnail.jpg"
+        img.convert("RGB").save(thumb_path, format="JPEG", quality=85)
+    except Exception:
+        # 缩略图失败不影响主流程
+        pass
 
 
 @router.get("", response_model=list[ImageResponse])
@@ -56,6 +76,12 @@ async def check_md5_exists(md5: str, refresh_time: bool = False):
             }
 
         return {"exists": False}
+
+
+@router.post("/check_md5")
+async def check_md5_compat(data: CheckMD5Request):
+    """旧项目兼容：POST /api/check_md5"""
+    return await check_md5_exists(data.md5, data.refresh_time)
 
 
 @router.get("/{image_id}", response_model=ImageResponse)
@@ -115,6 +141,53 @@ async def create_image(data: ImageCreate):
         image_id = cursor.lastrowid
         cursor.execute("SELECT * FROM images WHERE id = ?", (image_id,))
         return dict(cursor.fetchone())
+
+
+@router.post("/upload")
+async def upload_image(file: UploadFile = File(...)):
+    """旧项目兼容：Multipart 上传"""
+    if not file.filename:
+        return {"success": False, "error": "文件名为空"}
+
+    image_bytes = await file.read()
+    if not image_bytes:
+        return {"success": False, "error": "空文件"}
+
+    md5 = hashlib.md5(image_bytes).hexdigest()
+
+    # 检查是否存在
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM images WHERE md5 = ?", (md5,))
+        if cursor.fetchone():
+            return {"success": False, "error": "图片已存在"}
+
+        # 读取尺寸
+        width, height = 0, 0
+        try:
+            img = Image.open(io.BytesIO(image_bytes))
+            width, height = img.size
+        except Exception:
+            pass
+
+        # 保存原图
+        images_path = Path(settings.images_path)
+        images_path.mkdir(parents=True, exist_ok=True)
+        file_path = images_path / file.filename
+        file_path.write_bytes(image_bytes)
+
+        # 生成缩略图
+        save_thumbnail(image_bytes, md5)
+
+        # 写入数据库
+        cursor.execute(
+            """INSERT INTO images (filename, md5, tags, file_size, width, height)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (file.filename, md5, "", len(image_bytes), width, height)
+        )
+        conn.commit()
+
+    return {"success": True, "msg": "上传成功"}
 
 
 @router.put("/{image_id}/tags")

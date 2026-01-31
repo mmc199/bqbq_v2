@@ -203,6 +203,23 @@ export function useRulesApi() {
     })
   }
 
+  // 重命名规则组
+  async function renameGroup(
+    groupId: number,
+    name: string,
+    clientId: string,
+    baseVersion: number
+  ): Promise<ApiResponse<{ new_version: number }>> {
+    return request<{ new_version: number }>(`/rules/groups/${groupId}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name,
+        client_id: clientId,
+        base_version: baseVersion,
+      }),
+    })
+  }
+
   // 移动规则组到新父节点
   async function moveGroup(
     groupId: number,
@@ -348,6 +365,7 @@ export function useRulesApi() {
     createGroup,
     addKeyword,
     deleteGroup,
+    renameGroup,
     deleteKeyword,
     toggleKeyword,
     moveGroup,
@@ -373,7 +391,7 @@ export function useSystemApi() {
 
   // 导出数据
   async function exportData(): Promise<ApiResponse<Blob>> {
-    const response = await fetch(`${API_BASE}/export`)
+    const response = await fetch(`${API_BASE}/export/all`)
     if (!response.ok) {
       return { success: false, error: `HTTP ${response.status}` }
     }
@@ -382,11 +400,11 @@ export function useSystemApi() {
   }
 
   // 导入数据
-  async function importData(file: File): Promise<ApiResponse<{ imported: number }>> {
+  async function importData(file: File): Promise<ApiResponse<{ imported_images?: number; skipped_images?: number; message?: string }>> {
     const formData = new FormData()
     formData.append('file', file)
 
-    const response = await fetch(`${API_BASE}/import`, {
+    const response = await fetch(`${API_BASE}/import/all`, {
       method: 'POST',
       body: formData,
     })

@@ -1,3 +1,143 @@
+# BQBQ v2 迁移状态文档 - 轮数2
+
+> 复核轮次: 第2轮
+> 复核日期: 2026-01-31
+> 复核编号: 9d2fd60927a0
+> 复核说明: 本轮已逐段逐行对比旧项目与新项目全部代码与样式，生成差异清单并同步核对。
+
+## 本轮对比结论
+- 分析时间: 2026-01-31 14:17:06
+- 旧项目路径: C:\000soft\qqpy机器人-git\bqbq_backend-1\精确搜索SQLite端(旧)
+- 新项目路径: C:\000soft\qqpy机器人-git\bqbq_v2
+- 前端模板相似度: 0.2161
+- 前端脚本相似度: 0.0095
+- 样式相似度: 0.9963
+
+## 接口对齐校验
+- 旧项目接口数量: 20
+- 新项目接口数量: 33
+- 旧项目缺失接口: 9
+- 新项目额外接口: 22
+### 旧项目缺失接口明细
+- /api/rules/group/add
+- /api/rules/group/batch
+- /api/rules/group/delete
+- /api/rules/group/toggle
+- /api/rules/group/update
+- /api/rules/keyword/add
+- /api/rules/keyword/remove
+- /images/<path:f>
+- /thumbnails/<path:f>
+## DOM ID 对齐校验
+- 旧项目 ID 数量: 82
+- 缺失 ID 数量: 52
+### 缺失 ID 列表
+- clear-search-btn
+- clear-temp-tags
+- close-tag-count-panel
+- close-temp-panel
+- end-indicator
+- expansion-badge
+- fab-container
+- fab-expand-btn
+- fab-export
+- fab-hq
+- fab-import
+- fab-mini-clear
+- fab-mini-reload
+- fab-mini-search
+- fab-mini-strip
+- fab-search
+- fab-sort
+- fab-tag-count
+- fab-temp-tags
+- fab-temp-tags-slash
+- fab-toggle-btn
+- fab-trash
+- fab-tree
+- fab-tree-slash
+- fab-upload
+- file-upload
+- gallery-container
+- hq-status-dot
+- input-max-tags
+- input-min-tags
+- json-import-input
+- loading-indicator
+- meme-grid
+- reload-search-btn
+- search-btn-group
+- sort-date-asc
+- sort-date-desc
+- sort-menu
+- sort-resolution-asc
+- sort-resolution-desc
+- sort-size-asc
+- sort-size-desc
+- tag-count-badge
+- tag-count-display
+- tag-count-header
+- tag-count-panel
+- tag-count-title
+- temp-tag-input-container
+- temp-tag-panel
+- temp-tags-btn-group
+- toggle-temp-panel-btn
+- trash-active-dot
+## CSS 选择器对齐校验
+- 旧样式类选择器数量: 53
+- 旧样式 ID 选择器数量: 27
+- 缺失类选择器数量: 0
+- 缺失 ID 选择器数量: 0
+### 缺失选择器示例
+- 无
+
+## 差异示例（仅列出旧项目独有行）
+### style.css
+- @tailwind base;
+- @tailwind components;
+- @tailwind utilities;
+### index.html
+- <!DOCTYPE html>
+- <html lang="zh-CN">
+- <head>
+- <meta charset="UTF-8">
+- <meta name="viewport" content="width=device-width, initial-scale=1.0">
+- <title>BQBQ 表情标签</title>
+- <!-- Noto Color Emoji Web Font (用于Windows显示emoji) -->
+- <link rel="preconnect" href="https://fonts.googleapis.com">
+- <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+- <link href="https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&display=swap" rel="stylesheet">
+- <!-- Tailwind CSS -->
+- <script src="https://cdn.tailwindcss.com"></script>
+### script.js
+- * Unified Tag Input Module
+- * Handles capsule rendering, input interactions, and state management.
+- // --- 新增常量：缓存有效期（毫秒）---
+- const CACHE_DURATION = 10 * 60 * 1000;
+- const TAGS_CACHE_KEY = 'bqbq_tag_cache';
+- const TAGS_TIME_KEY = 'bqbq_tag_timestamp';
+- const RULES_VERSION_KEY = 'bqbq_rules_version'; // 存储规则树的本地版本号
+- const CLIENT_ID_KEY = 'bqbq_client_id'; // 存储客户端唯一 ID
+- const FAB_COLLAPSED_KEY = 'bqbq_fab_collapsed'; // 存储FAB悬浮按钮组的折叠状态
+- const FAB_MINI_POSITION_KEY = 'bqbq_fab_mini_position'; // 存储FAB迷你按钮组的垂直位置
+- // --- 支持的图片扩展名列表 ---
+- const SUPPORTED_EXTENSIONS = ['gif', 'png', 'jpg', 'webp'];
+
+## 文件指纹（SHA256 前12位）
+- old/index.html: 4edcef25c4a7
+- old/style.css: 0ffef3bdcefd
+- old/script.js: 2cccfd6e0fa3
+- old/app.py: cb87d376589a
+- new/frontend/style.css: ebafa64a2c6a
+- new/Gallery.vue: cfad4a5a550e
+- new/RuleTree.vue: b1e6b2ff4d20
+- new/MemeCard.vue: 64d323919ccc
+- new/FloatingButtons.vue: eecf2f48a8f3
+- new/backend/main.py: 6002242dd815
+
+---
+
 ﻿# BQBQ v2 迁移状态文档
 
 
