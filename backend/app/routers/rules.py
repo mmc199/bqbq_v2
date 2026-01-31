@@ -3,6 +3,7 @@
 """
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from ..database import get_connection, get_rules_version, increment_rules_version, get_conflict_info
 from ..models.rule import (
     GroupCreate, GroupResponse, KeywordCreate,
@@ -13,6 +14,55 @@ from ..models.rule import (
 )
 
 router = APIRouter()
+
+
+class LegacyKeywordAddRequest(BaseModel):
+    base_version: int
+    client_id: str
+    group_id: int
+    keyword: str
+
+
+class LegacyKeywordRemoveRequest(BaseModel):
+    base_version: int
+    client_id: str
+    group_id: int
+    keyword: str
+
+
+class LegacyGroupAddRequest(BaseModel):
+    base_version: int
+    client_id: str
+    group_name: str
+    is_enabled: int | bool = 1
+
+
+class LegacyGroupUpdateRequest(BaseModel):
+    base_version: int
+    client_id: str
+    group_id: int
+    group_name: str
+    is_enabled: int | bool = 1
+
+
+class LegacyGroupToggleRequest(BaseModel):
+    base_version: int
+    client_id: str
+    group_id: int
+    is_enabled: int | bool
+
+
+class LegacyGroupDeleteRequest(BaseModel):
+    base_version: int
+    client_id: str
+    group_id: int
+
+
+class LegacyGroupBatchRequest(BaseModel):
+    base_version: int
+    client_id: str
+    group_ids: list[int]
+    action: str
 
 
 def create_conflict_response(base_version: int, current_version: int):
@@ -216,7 +266,7 @@ async def delete_group(group_id: int, data: CASRequest):
         )
         conn.commit()
 
-        return {"success": True, "new_version": new_version}
+        return {"success": True, "new_version": new_version, "version_id": new_version}
 
 
 @router.delete("/keywords/{keyword_id}")
@@ -246,7 +296,7 @@ async def delete_keyword(keyword_id: int, data: CASRequest):
         )
         conn.commit()
 
-        return {"success": True, "new_version": new_version}
+        return {"success": True, "new_version": new_version, "version_id": new_version}
 
 
 @router.post("/keywords/{keyword_id}/toggle")
@@ -419,7 +469,7 @@ async def batch_groups(data: GroupBatchRequest):
         )
         conn.commit()
 
-        return {"success": True, "new_version": new_version, "affected": affected}
+        return {"success": True, "new_version": new_version, "version_id": new_version, "affected": affected}
 
 
 def has_hierarchy_cycle(cursor, parent_id: int, child_id: int) -> bool:
@@ -615,3 +665,217 @@ def rebuild_hierarchy_for_group(cursor, group_id: int, new_parent_id: int | None
     children = cursor.fetchall()
     for child in children:
         rebuild_hierarchy_for_group(cursor, child['id'], group_id)
+
+
+# ===== 旧项目兼容接口（/api/rules/group/* /api/rules/keyword/*） =====
+
+
+@router.post("/group/add")
+async def legacy_add_group(data: LegacyGroupAddRequest):
+    """旧项目兼容：/api/rules/group/add"""
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
+    name = data.group_name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="group_name cannot be empty")
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "INSERT INTO search_groups (name, parent_id, enabled) VALUES (?, ?, ?)",
+            (name, None, 1 if data.is_enabled else 0)
+        )
+        group_id = cursor.lastrowid
+
+        cursor.execute(
+            "INSERT INTO search_hierarchy (ancestor_id, descendant_id, depth) VALUES (?, ?, 0)",
+            (group_id, group_id)
+        )
+
+        new_version = increment_rules_version(
+            conn, data.client_id, "create_group",
+            f"name={name}, parent_id=None"
+        )
+        conn.commit()
+
+        return {"success": True, "version_id": new_version, "new_id": group_id}
+
+
+@router.post("/group/update")
+async def legacy_update_group(data: LegacyGroupUpdateRequest):
+    """旧项目兼容：/api/rules/group/update"""
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
+    name = data.group_name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="group_name cannot be empty")
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.group_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="规则组不存在")
+
+        cursor.execute(
+            "UPDATE search_groups SET name = ?, enabled = ? WHERE id = ?",
+            (name, 1 if data.is_enabled else 0, data.group_id)
+        )
+
+        new_version = increment_rules_version(
+            conn, data.client_id, "update_group",
+            f"group_id={data.group_id}, name={name}, enabled={data.is_enabled}"
+        )
+        conn.commit()
+
+        return {"success": True, "version_id": new_version}
+
+
+@router.post("/group/toggle")
+async def legacy_toggle_group(data: LegacyGroupToggleRequest):
+    """旧项目兼容：/api/rules/group/toggle"""
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.group_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="规则组不存在")
+
+        cursor.execute(
+            "UPDATE search_groups SET enabled = ? WHERE id = ?",
+            (1 if data.is_enabled else 0, data.group_id)
+        )
+
+        new_version = increment_rules_version(
+            conn, data.client_id, "toggle_group",
+            f"group_id={data.group_id}, enabled={data.is_enabled}"
+        )
+        conn.commit()
+
+        return {"success": True, "version_id": new_version}
+
+
+@router.post("/group/delete")
+async def legacy_delete_group(data: LegacyGroupDeleteRequest):
+    """旧项目兼容：/api/rules/group/delete"""
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM search_groups WHERE id = ?", (data.group_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="规则组不存在")
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM search_hierarchy WHERE ancestor_id = ?", (data.group_id,))
+        delete_count = cursor.fetchone()['cnt']
+
+        cursor.execute("DELETE FROM search_groups WHERE id = ?", (data.group_id,))
+
+        new_version = increment_rules_version(
+            conn, data.client_id, "delete_group",
+            f"group_id={data.group_id}, name={row['name']}"
+        )
+        conn.commit()
+
+        return {"success": True, "version_id": new_version, "deleted_count": delete_count}
+
+
+@router.post("/group/batch")
+async def legacy_batch_group(data: LegacyGroupBatchRequest):
+    """旧项目兼容：/api/rules/group/batch"""
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
+    if not data.group_ids:
+        raise HTTPException(status_code=400, detail="group_ids must be a non-empty array")
+
+    if data.action not in {"enable", "disable", "delete"}:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        affected = 0
+
+        if data.action in {"enable", "disable"}:
+            enabled_value = 1 if data.action == "enable" else 0
+            for gid in data.group_ids:
+                cursor.execute(
+                    "UPDATE search_groups SET enabled = ? WHERE id = ?",
+                    (enabled_value, gid)
+                )
+                if cursor.rowcount > 0:
+                    affected += 1
+        else:
+            for gid in data.group_ids:
+                cursor.execute("DELETE FROM search_groups WHERE id = ?", (gid,))
+                if cursor.rowcount > 0:
+                    affected += 1
+
+        new_version = increment_rules_version(
+            conn, data.client_id, "batch_group",
+            f"action={data.action}, group_ids={data.group_ids}, affected={affected}"
+        )
+        conn.commit()
+
+        return {"success": True, "version_id": new_version, "affected_count": affected}
+
+
+@router.post("/keyword/add")
+async def legacy_add_keyword(data: LegacyKeywordAddRequest):
+    """旧项目兼容：/api/rules/keyword/add"""
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.group_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="规则组不存在")
+
+        cursor.execute(
+            "INSERT INTO search_keywords (keyword, group_id) VALUES (?, ?)",
+            (data.keyword, data.group_id)
+        )
+
+        new_version = increment_rules_version(
+            conn, data.client_id, "add_keyword",
+            f"keyword={data.keyword}, group_id={data.group_id}"
+        )
+        conn.commit()
+
+        return {"success": True, "version_id": new_version}
+
+
+@router.post("/keyword/remove")
+async def legacy_remove_keyword(data: LegacyKeywordRemoveRequest):
+    """旧项目兼容：/api/rules/keyword/remove"""
+    current_version = get_rules_version()
+    if data.base_version != current_version:
+        return create_conflict_response(data.base_version, current_version)
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM search_keywords WHERE group_id = ? AND keyword = ?",
+            (data.group_id, data.keyword)
+        )
+
+        new_version = increment_rules_version(
+            conn, data.client_id, "remove_keyword",
+            f"keyword={data.keyword}, group_id={data.group_id}"
+        )
+        conn.commit()
+
+        return {"success": True, "version_id": new_version}

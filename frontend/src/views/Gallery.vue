@@ -35,6 +35,7 @@ const hasMore = ref(true)
 
 // 模态框状态
 const uploadInputRef = ref<HTMLInputElement | null>(null)
+const importInputRef = ref<HTMLInputElement | null>(null)
 const isUploading = ref(false)
 const showRulesPanel = ref(false)
 // 功能开关（从 store 读取持久化值）
@@ -449,26 +450,26 @@ async function handleExport() {
 
 // 处理导入
 async function handleImport() {
-  const input = document.createElement('input')
-  input.type = 'file'
-  input.accept = '.json'
-  input.onchange = async (e) => {
-    const file = (e.target as HTMLInputElement).files?.[0]
-    if (!file) return
+  if (!importInputRef.value) return
+  importInputRef.value.value = ''
+  importInputRef.value.click()
+}
 
-    toast.info('正在导入数据...')
-    const result = await systemApi.importData(file)
-    if (result.success) {
-      const added = result.data?.imported_images ?? 0
-      const skipped = result.data?.skipped_images ?? 0
-      toast.success(`导入成功！新增 ${added} 张，跳过 ${skipped} 张`)
-      searchImages(true)
-      loadAllTags(true) // 强制刷新缓存
-    } else {
-      toast.error('导入失败')
-    }
+async function handleJsonImportChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+
+  toast.info('正在导入数据...')
+  const result = await systemApi.importData(file)
+  if (result.success) {
+    const added = result.data?.imported_images ?? 0
+    const skipped = result.data?.skipped_images ?? 0
+    toast.success(`导入成功！新增 ${added} 张，跳过 ${skipped} 张`)
+    searchImages(true)
+    loadAllTags(true) // 强制刷新缓存
+  } else {
+    toast.error('导入失败')
   }
-  input.click()
 }
 
 // 处理回收站模式切换
@@ -597,6 +598,7 @@ onMounted(() => {
 
     <!-- 主内容区 - 图片网格 -->
     <main
+      id="gallery-container"
       ref="mainRef"
       class="flex-1 overflow-y-auto p-4 custom-scrollbar relative bg-slate-50"
       @scroll="handleMainScroll"
@@ -604,6 +606,7 @@ onMounted(() => {
       <!-- 图片网格 - 使用旧项目的列数配置 -->
       <div
         v-if="images.length > 0"
+        id="meme-grid"
         class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4 pb-40"
       >
         <MemeCard
@@ -632,12 +635,12 @@ onMounted(() => {
       </div>
 
       <!-- 加载指示器 -->
-      <div v-if="isLoading" class="flex justify-center py-8">
+      <div v-if="isLoading" id="loading-indicator" class="flex justify-center py-8">
         <div class="w-8 h-8 border-4 border-slate-200 border-t-blue-500 rounded-full animate-spin"></div>
       </div>
 
       <!-- 到底提示 -->
-      <div v-if="!hasMore && images.length > 0 && !isLoading" class="py-12 text-center text-sm font-semibold text-slate-300">
+      <div v-if="!hasMore && images.length > 0 && !isLoading" id="end-indicator" class="py-12 text-center text-sm font-semibold text-slate-300">
         - 到底了 -
       </div>
 
@@ -687,12 +690,22 @@ onMounted(() => {
     </datalist>
 
     <input
+      id="file-upload"
       ref="uploadInputRef"
       type="file"
       class="hidden"
       multiple
       accept="image/*"
       @change="handleUploadChange"
+    />
+
+    <input
+      id="json-import-input"
+      ref="importInputRef"
+      type="file"
+      class="hidden"
+      accept=".json"
+      @change="handleJsonImportChange"
     />
   </div>
 </template>

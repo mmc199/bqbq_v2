@@ -1782,7 +1782,11 @@ import {
 
 
 ## 追加更新（2026-01-31）
+- [x] DOM ID 对齐：补齐旧版缺失的 FAB/面板/网格/加载等全部 ID。
+- [x] 规则接口兼容：补齐 `/api/rules/group/*`、`/api/rules/keyword/*` 旧版路径，并补充 `version_id` 返回字段。
 - [x] 规则树：修复中文乱码，补齐根目录放置区/节点间隙 drop-gap、批量拖拽视觉、冲突检测区块与修复按钮，结构与旧版一致。
+- [x] 复核循环：已重新执行 5 轮差异分析并更新报告（`MIGRATION_STATUS-轮数1..5.md`），接口/DOM/CSS/指纹已重新计算。
+- [x] 样式入口调整：`frontend/src/style.css` 顶部改为 `@import "tailwindcss";`（按当前指示覆盖旧版入口形式）。
 - [x] 规则树滚动：自定义滚动条（左侧/上方）+ Pointer Capture 拖拽同步完成。
 - [x] 后端兼容：新增 `/api/check_md5`、`/api/update_tags`，`/api/search` 兼容旧版高级搜索负载。
 - [x] 编码策略：统一 UTF-8 读写流程，避免中文注释/文本再次乱码。
@@ -4436,6 +4440,8 @@ def import_all():
 
 **文档用途**: 用于 100% 复刻旧项目到新项目的完整参考
 ```
+
+
 
 
 
