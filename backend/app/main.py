@@ -107,8 +107,11 @@ def create_thumbnail(source_path: Path, thumb_path: Path) -> bool:
 @app.get("/thumbnails/{filename}")
 async def serve_thumbnail(filename: str):
     """提供缩略图服务"""
+    # 兼容子目录路径（如 trash_bin/xxx.jpg）
+    requested_path = Path(filename)
+    file_name = requested_path.name
     # 获取不带后缀的文件名
-    base_name = os.path.splitext(filename)[0]
+    base_name = os.path.splitext(file_name)[0]
 
     # 如果文件名已经包含 _thumbnail，直接使用
     if base_name.endswith("_thumbnail"):
@@ -120,12 +123,27 @@ async def serve_thumbnail(filename: str):
         md5 = base_name
 
     thumb_path = thumbnails_path / thumb_name
+    thumb_path_subdir = None
+    if requested_path.parent != Path('.'):
+        thumb_path_subdir = thumbnails_path / requested_path.parent / thumb_name
 
     if thumb_path.exists():
         return FileResponse(thumb_path)
+    if thumb_path_subdir and thumb_path_subdir.exists():
+        return FileResponse(thumb_path_subdir)
 
     # 如果缩略图不存在，尝试生成
     # 查找原图
+    original_subpath = images_path / requested_path
+    if original_subpath.exists():
+        if create_thumbnail(original_subpath, thumb_path):
+            return FileResponse(thumb_path)
+
+    original_named = images_path / file_name
+    if original_named.exists():
+        if create_thumbnail(original_named, thumb_path):
+            return FileResponse(thumb_path)
+
     for ext in settings.allowed_extensions:
         original_path = images_path / f"{md5}.{ext}"
         if original_path.exists():
@@ -364,11 +382,11 @@ async def upload_file(file: UploadFile = File(...)):
     """上传图片文件（FormData 方式）"""
     # 验证文件类型
     if not file.filename:
-        raise HTTPException(status_code=400, detail="文件名不能为空")
+        return {"success": False}
 
-    ext = file.filename.split('.')[-1].lower()
-    if ext not in settings.allowed_extensions:
-        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
+    ext = Path(file.filename).suffix.lower()
+    if not ext:
+        ext = ".jpg"
 
     # 读取文件内容
     content = await file.read()
@@ -385,7 +403,7 @@ async def upload_file(file: UploadFile = File(...)):
             # 重复图片：更新上传时间
             cursor.execute("UPDATE images SET created_at = CURRENT_TIMESTAMP WHERE md5 = ?", (md5,))
             conn.commit()
-            return {"success": False, "error": "图片已存在（已更新时间戳）", "md5": md5}
+            return {"success": False, "msg": "Duplicate image (timestamp refreshed)"}
 
         # 获取图片尺寸
         try:
@@ -395,7 +413,7 @@ async def upload_file(file: UploadFile = File(...)):
             width, height = 0, 0
 
         # 生成文件名（使用 MD5 避免重名）
-        filename = f"{md5}.{ext}"
+        filename = f"{md5}{ext}"
         file_path = images_path / filename
         file_path.write_bytes(content)
 
@@ -412,10 +430,4 @@ async def upload_file(file: UploadFile = File(...)):
         )
         conn.commit()
 
-        return {
-            "success": True,
-            "msg": "上传成功",
-            "id": cursor.lastrowid,
-            "filename": filename,
-            "md5": md5
-        }
+        return {"success": True, "msg": md5}

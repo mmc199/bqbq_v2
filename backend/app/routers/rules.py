@@ -4,10 +4,17 @@
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from ..database import get_connection, get_rules_version, increment_rules_version, get_conflict_info
+from ..database import (
+    get_connection,
+    get_rules_version,
+    increment_rules_version,
+    get_conflict_info,
+    ensure_hierarchy_edges,
+    rebuild_hierarchy_from_edges
+)
 from ..models.rule import (
     GroupCreate, GroupResponse, KeywordCreate,
-    RulesTreeResponse, KeywordResponse, CASRequest,
+    KeywordResponse, CASRequest,
     GroupUpdate, GroupToggle, GroupBatchRequest,
     HierarchyAddRequest, HierarchyRemoveRequest, HierarchyBatchMoveRequest,
     KeywordToggle
@@ -65,25 +72,46 @@ class LegacyGroupBatchRequest(BaseModel):
     action: str
 
 
+def build_legacy_rules_data() -> dict:
+    """构建旧项目扁平化规则结构"""
+    with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id as group_id, name as group_name, COALESCE(enabled, 1) as is_enabled FROM search_groups")
+        groups = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute("SELECT keyword, group_id, COALESCE(enabled, 1) as is_enabled FROM search_keywords")
+        keywords = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT parent_id, child_id
+            FROM search_hierarchy_edges
+        """)
+        hierarchy = [dict(row) for row in cursor.fetchall()]
+
+    return {
+        "version_id": get_rules_version(),
+        "groups": groups,
+        "keywords": keywords,
+        "hierarchy": hierarchy
+    }
+
+
 def create_conflict_response(base_version: int, current_version: int):
     """
-    创建版本冲突响应，包含最新规则树数据和冲突统计信息。
+    创建版本冲突响应，包含最新规则数据和冲突统计信息。
     与旧项目保持一致的响应格式。
     """
     conflict_info = get_conflict_info(base_version)
-    tree = build_rules_tree()
+    latest_data = build_legacy_rules_data()
 
     return JSONResponse(
         status_code=409,
         content={
             "success": False,
+            "status": 409,
             "error": "conflict",
-            "detail": f"版本冲突: 期望 {base_version}, 当前 {current_version}",
-            "current_version": current_version,
-            "latest_data": {
-                "version": current_version,
-                "groups": [g.model_dump() for g in tree]
-            },
+            "latest_data": latest_data,
             "unique_modifiers": conflict_info["unique_modifiers"]
         }
     )
@@ -92,6 +120,7 @@ def create_conflict_response(base_version: int, current_version: int):
 def build_rules_tree() -> list[GroupResponse]:
     """构建规则树结构"""
     with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
         cursor = conn.cursor()
 
         # 获取所有组（包含 enabled 字段）
@@ -138,9 +167,53 @@ def build_rules_tree() -> list[GroupResponse]:
         return [to_response(g) for g in root_groups]
 
 
-@router.get("", response_model=RulesTreeResponse)
+def collect_descendants(cursor, root_id: int) -> list[int]:
+    """基于边表收集所有后代（包含自身）"""
+    to_visit = [root_id]
+    visited: set[int] = set()
+
+    while to_visit:
+        current = to_visit.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        cursor.execute(
+            "SELECT child_id FROM search_hierarchy_edges WHERE parent_id = ?",
+            (current,)
+        )
+        children = [row['child_id'] for row in cursor.fetchall()]
+        to_visit.extend(children)
+
+    return list(visited)
+
+
+def remove_edges_for_groups(cursor, group_ids: list[int]) -> None:
+    """删除指定组相关的所有父子边"""
+    if not group_ids:
+        return
+    placeholders = ",".join(["?"] * len(group_ids))
+    cursor.execute(
+        f"DELETE FROM search_hierarchy_edges WHERE parent_id IN ({placeholders}) OR child_id IN ({placeholders})",
+        group_ids + group_ids
+    )
+
+
+def sync_parent_id_for_child(cursor, child_id: int) -> None:
+    """将 search_groups.parent_id 同步为任意一个非 0 的父节点（仅用于兼容展示）"""
+    cursor.execute(
+        "SELECT parent_id FROM search_hierarchy_edges WHERE child_id = ? AND parent_id != 0 ORDER BY parent_id LIMIT 1",
+        (child_id,)
+    )
+    row = cursor.fetchone()
+    cursor.execute(
+        "UPDATE search_groups SET parent_id = ? WHERE id = ?",
+        (row['parent_id'] if row else None, child_id)
+    )
+
+
+@router.get("")
 async def get_rules_tree(response: Response, if_none_match: str | None = None):
-    """获取规则树（支持 ETag 缓存）"""
+    """获取规则树（旧项目扁平结构，支持 ETag 缓存）"""
     current_version = get_rules_version()
 
     # ETag 检查
@@ -148,10 +221,10 @@ async def get_rules_tree(response: Response, if_none_match: str | None = None):
         response.status_code = 304
         return Response(status_code=304)
 
-    tree = build_rules_tree()
+    legacy_data = build_legacy_rules_data()
     response.headers["ETag"] = str(current_version)
 
-    return RulesTreeResponse(version=current_version, groups=tree)
+    return legacy_data
 
 
 @router.post("/groups")
@@ -163,36 +236,32 @@ async def create_group(data: GroupCreate):
         return create_conflict_response(data.base_version, current_version)
 
     with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
         cursor = conn.cursor()
 
         # 检查父组是否存在
         if data.parent_id is not None:
-            cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.parent_id,))
-            if not cursor.fetchone():
-                raise HTTPException(status_code=404, detail="父组不存在")
+            if data.parent_id != 0:
+                cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.parent_id,))
+                if not cursor.fetchone():
+                    raise HTTPException(status_code=404, detail="父组不存在")
 
         # 创建组
+        parent_id = data.parent_id if data.parent_id not in (None, 0) else None
         cursor.execute(
             "INSERT INTO search_groups (name, parent_id) VALUES (?, ?)",
-            (data.name, data.parent_id)
+            (data.name, parent_id)
         )
         group_id = cursor.lastrowid
 
-        # 更新层级关系表
-        # 自己到自己的关系
-        cursor.execute(
-            "INSERT INTO search_hierarchy (ancestor_id, descendant_id, depth) VALUES (?, ?, 0)",
-            (group_id, group_id)
-        )
+        # 维护边表（允许多父关系）
+        if data.parent_id not in (None, 0):
+            cursor.execute(
+                "INSERT OR IGNORE INTO search_hierarchy_edges (parent_id, child_id) VALUES (?, ?)",
+                (data.parent_id, group_id)
+            )
 
-        # 继承父节点的所有祖先关系
-        if data.parent_id is not None:
-            cursor.execute("""
-                INSERT INTO search_hierarchy (ancestor_id, descendant_id, depth)
-                SELECT ancestor_id, ?, depth + 1
-                FROM search_hierarchy
-                WHERE descendant_id = ?
-            """, (group_id, data.parent_id))
+        rebuild_hierarchy_from_edges(conn)
 
         # 递增版本号
         new_version = increment_rules_version(
@@ -213,6 +282,7 @@ async def add_keyword(group_id: int, data: KeywordCreate):
         return create_conflict_response(data.base_version, current_version)
 
     with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
         cursor = conn.cursor()
 
         # 检查组是否存在
@@ -220,9 +290,13 @@ async def add_keyword(group_id: int, data: KeywordCreate):
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="规则组不存在")
 
-        # 添加关键词
+        # 添加关键词（去重，兼容旧项目 OR REPLACE 语义）
         cursor.execute(
-            "INSERT INTO search_keywords (keyword, group_id) VALUES (?, ?)",
+            "DELETE FROM search_keywords WHERE group_id = ? AND keyword = ?",
+            (group_id, data.keyword)
+        )
+        cursor.execute(
+            "INSERT INTO search_keywords (keyword, group_id, enabled) VALUES (?, ?, 1)",
             (data.keyword, group_id)
         )
         keyword_id = cursor.lastrowid
@@ -246,6 +320,7 @@ async def delete_group(group_id: int, data: CASRequest):
         return create_conflict_response(data.base_version, current_version)
 
     with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
         cursor = conn.cursor()
 
         # 检查组是否存在
@@ -256,8 +331,24 @@ async def delete_group(group_id: int, data: CASRequest):
 
         group_name = row['name']
 
-        # 删除组（级联删除由外键约束处理）
-        cursor.execute("DELETE FROM search_groups WHERE id = ?", (group_id,))
+        # 递归收集所有后代（含自身）
+        all_group_ids = collect_descendants(cursor, group_id)
+
+        if all_group_ids:
+            placeholders = ",".join(["?"] * len(all_group_ids))
+            # 删除关键词
+            cursor.execute(
+                f"DELETE FROM search_keywords WHERE group_id IN ({placeholders})",
+                all_group_ids
+            )
+            # 删除层级边
+            remove_edges_for_groups(cursor, all_group_ids)
+            # 删除组
+            cursor.execute(
+                f"DELETE FROM search_groups WHERE id IN ({placeholders})",
+                all_group_ids
+            )
+            rebuild_hierarchy_from_edges(conn)
 
         # 递增版本号
         new_version = increment_rules_version(
@@ -329,7 +420,7 @@ async def toggle_keyword(keyword_id: int, data: KeywordToggle):
         )
         conn.commit()
 
-        return {"success": True, "new_version": new_version}
+        return {"success": True, "version_id": new_version}
 
 
 @router.put("/groups/{group_id}")
@@ -369,6 +460,8 @@ async def update_group(group_id: int, data: GroupUpdate):
                 cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.parent_id,))
                 if not cursor.fetchone():
                     raise HTTPException(status_code=404, detail="父组不存在")
+                if has_hierarchy_cycle(cursor, data.parent_id, group_id):
+                    raise HTTPException(status_code=400, detail="不能创建循环引用关系")
             updates.append("parent_id = ?")
             params.append(data.parent_id if data.parent_id != 0 else None)
             details.append(f"parent_id={data.parent_id}")
@@ -379,9 +472,15 @@ async def update_group(group_id: int, data: GroupUpdate):
         params.append(group_id)
         cursor.execute(f"UPDATE search_groups SET {', '.join(updates)} WHERE id = ?", params)
 
-        # 如果移动了父节点，需要重建层级关系
+        # 如果移动了父节点，更新边表并重建闭包表
         if data.parent_id is not None:
-            rebuild_hierarchy_for_group(cursor, group_id, data.parent_id if data.parent_id != 0 else None)
+            cursor.execute("DELETE FROM search_hierarchy_edges WHERE child_id = ?", (group_id,))
+            if data.parent_id != 0:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO search_hierarchy_edges (parent_id, child_id) VALUES (?, ?)",
+                    (data.parent_id, group_id)
+                )
+            rebuild_hierarchy_from_edges(conn)
 
         new_version = increment_rules_version(
             conn, data.client_id, "update_group",
@@ -389,7 +488,7 @@ async def update_group(group_id: int, data: GroupUpdate):
         )
         conn.commit()
 
-        return {"success": True, "new_version": new_version}
+        return {"success": True, "version_id": new_version}
 
 
 @router.post("/groups/{group_id}/toggle")
@@ -436,9 +535,24 @@ async def batch_groups(data: GroupBatchRequest):
         affected = 0
 
         if data.action == "delete":
+            all_group_ids: list[int] = []
             for gid in data.group_ids:
-                cursor.execute("DELETE FROM search_groups WHERE id = ?", (gid,))
-                affected += cursor.rowcount
+                all_group_ids.extend(collect_descendants(cursor, gid))
+            all_group_ids = list(set(all_group_ids))
+
+            if all_group_ids:
+                placeholders = ",".join(["?"] * len(all_group_ids))
+                cursor.execute(
+                    f"DELETE FROM search_keywords WHERE group_id IN ({placeholders})",
+                    all_group_ids
+                )
+                remove_edges_for_groups(cursor, all_group_ids)
+                cursor.execute(
+                    f"DELETE FROM search_groups WHERE id IN ({placeholders})",
+                    all_group_ids
+                )
+                rebuild_hierarchy_from_edges(conn)
+                affected = len(all_group_ids)
 
         elif data.action == "enable":
             for gid in data.group_ids:
@@ -451,14 +565,29 @@ async def batch_groups(data: GroupBatchRequest):
                 affected += cursor.rowcount
 
         elif data.action == "move":
+            target_parent_id = data.target_parent_id if data.target_parent_id not in (None, 0) else None
+            if target_parent_id is not None:
+                cursor.execute("SELECT id FROM search_groups WHERE id = ?", (target_parent_id,))
+                if not cursor.fetchone():
+                    raise HTTPException(status_code=404, detail="目标父节点不存在")
+
             for gid in data.group_ids:
+                if target_parent_id is not None and target_parent_id == gid:
+                    continue
+                if target_parent_id is not None and has_hierarchy_cycle(cursor, target_parent_id, gid):
+                    continue
+                cursor.execute("DELETE FROM search_hierarchy_edges WHERE child_id = ?", (gid,))
+                if target_parent_id is not None:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO search_hierarchy_edges (parent_id, child_id) VALUES (?, ?)",
+                        (target_parent_id, gid)
+                    )
                 cursor.execute(
                     "UPDATE search_groups SET parent_id = ? WHERE id = ?",
-                    (data.target_parent_id, gid)
+                    (target_parent_id, gid)
                 )
-                if cursor.rowcount > 0:
-                    rebuild_hierarchy_for_group(cursor, gid, data.target_parent_id)
-                    affected += 1
+                affected += 1
+            rebuild_hierarchy_from_edges(conn)
 
         else:
             raise HTTPException(status_code=400, detail=f"未知操作: {data.action}")
@@ -491,31 +620,22 @@ def has_hierarchy_cycle(cursor, parent_id: int, child_id: int) -> bool:
         return True  # 自引用必然成环
 
     visited = set()
+    stack = [child_id]
 
-    def dfs(current_node: int) -> bool:
-        """从 current_node 向上查找所有父节点，检测是否能到达 child_id"""
-        if current_node == child_id:
-            return True  # 找到 child_id，说明它是祖先，会形成环
-
-        if current_node in visited:
-            return False  # 已访问过，避免无限循环
-
-        visited.add(current_node)
-
-        # 查找 current_node 的父节点
+    while stack:
+        current = stack.pop()
+        if current == parent_id:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
         cursor.execute(
-            "SELECT parent_id FROM search_groups WHERE id = ? AND parent_id IS NOT NULL",
-            (current_node,)
+            "SELECT child_id FROM search_hierarchy_edges WHERE parent_id = ?",
+            (current,)
         )
-        row = cursor.fetchone()
+        stack.extend([row['child_id'] for row in cursor.fetchall()])
 
-        if row and row['parent_id']:
-            return dfs(row['parent_id'])
-
-        return False
-
-    # 从 parent_id 开始向上查找，检测 child_id 是否是其祖先
-    return dfs(parent_id)
+    return False
 
 
 @router.post("/hierarchy/add")
@@ -527,6 +647,7 @@ async def add_hierarchy(data: HierarchyAddRequest):
         return create_conflict_response(data.base_version, current_version)
 
     with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
         cursor = conn.cursor()
 
         # 检查自引用
@@ -538,22 +659,34 @@ async def add_hierarchy(data: HierarchyAddRequest):
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="子节点不存在")
 
-        cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.parent_id,))
-        if not cursor.fetchone():
-            raise HTTPException(status_code=404, detail="父节点不存在")
+        if data.parent_id != 0:
+            cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.parent_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="父节点不存在")
 
         # 检查是否会形成环路
-        if has_hierarchy_cycle(cursor, data.parent_id, data.child_id):
+        if data.parent_id != 0 and has_hierarchy_cycle(cursor, data.parent_id, data.child_id):
             raise HTTPException(status_code=400, detail="不能创建循环引用关系")
 
-        # 更新父节点
         cursor.execute(
-            "UPDATE search_groups SET parent_id = ? WHERE id = ?",
+            "INSERT OR IGNORE INTO search_hierarchy_edges (parent_id, child_id) VALUES (?, ?)",
             (data.parent_id, data.child_id)
         )
 
-        # 重建层级关系
-        rebuild_hierarchy_for_group(cursor, data.child_id, data.parent_id)
+        # 更新单一 parent_id（仅作兼容展示）
+        if data.parent_id != 0:
+            cursor.execute(
+                "SELECT parent_id FROM search_groups WHERE id = ?",
+                (data.child_id,)
+            )
+            current_parent = cursor.fetchone()
+            if current_parent and current_parent['parent_id'] is None:
+                cursor.execute(
+                    "UPDATE search_groups SET parent_id = ? WHERE id = ?",
+                    (data.parent_id, data.child_id)
+                )
+
+        rebuild_hierarchy_from_edges(conn)
 
         new_version = increment_rules_version(
             conn, data.client_id, "add_hierarchy",
@@ -561,7 +694,7 @@ async def add_hierarchy(data: HierarchyAddRequest):
         )
         conn.commit()
 
-        return {"success": True, "new_version": new_version}
+        return {"success": True, "version_id": new_version}
 
 
 @router.post("/hierarchy/remove")
@@ -573,6 +706,7 @@ async def remove_hierarchy(data: HierarchyRemoveRequest):
         return create_conflict_response(data.base_version, current_version)
 
     with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
         cursor = conn.cursor()
 
         # 检查节点是否存在
@@ -581,14 +715,18 @@ async def remove_hierarchy(data: HierarchyRemoveRequest):
         if not row:
             raise HTTPException(status_code=404, detail="子节点不存在")
 
-        # 更新为根节点
+        # 删除父子关系
         cursor.execute(
-            "UPDATE search_groups SET parent_id = NULL WHERE id = ?",
-            (data.child_id,)
+            "DELETE FROM search_hierarchy_edges WHERE parent_id = ? AND child_id = ?",
+            (data.parent_id, data.child_id)
         )
 
-        # 重建层级关系
-        rebuild_hierarchy_for_group(cursor, data.child_id, None)
+        # 同步展示用 parent_id
+        if data.parent_id == row['parent_id'] or data.parent_id == 0:
+            sync_parent_id_for_child(cursor, data.child_id)
+
+        # 重建闭包表
+        rebuild_hierarchy_from_edges(conn)
 
         new_version = increment_rules_version(
             conn, data.client_id, "remove_hierarchy",
@@ -596,7 +734,7 @@ async def remove_hierarchy(data: HierarchyRemoveRequest):
         )
         conn.commit()
 
-        return {"success": True, "new_version": new_version}
+        return {"success": True, "version_id": new_version}
 
 
 @router.post("/hierarchy/batch_move")
@@ -608,31 +746,60 @@ async def batch_move_hierarchy(data: HierarchyBatchMoveRequest):
         return create_conflict_response(data.base_version, current_version)
 
     with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
         cursor = conn.cursor()
 
+        group_ids = data.group_ids or data.child_ids or []
+        if not group_ids:
+            raise HTTPException(status_code=400, detail="group_ids must be a non-empty array")
+
+        target_parent_id = data.new_parent_id if data.new_parent_id is not None else data.parent_id
+        target_parent_id = target_parent_id if target_parent_id is not None else 0
+
         # 检查新父节点是否存在
-        if data.new_parent_id is not None:
-            cursor.execute("SELECT id FROM search_groups WHERE id = ?", (data.new_parent_id,))
+        if target_parent_id != 0:
+            cursor.execute("SELECT id FROM search_groups WHERE id = ?", (target_parent_id,))
             if not cursor.fetchone():
                 raise HTTPException(status_code=404, detail="目标父节点不存在")
 
-        affected = 0
-        for gid in data.group_ids:
-            cursor.execute(
-                "UPDATE search_groups SET parent_id = ? WHERE id = ?",
-                (data.new_parent_id, gid)
-            )
-            if cursor.rowcount > 0:
-                rebuild_hierarchy_for_group(cursor, gid, data.new_parent_id)
-                affected += 1
+        moved_count = 0
+        errors: list[dict] = []
+        for gid in group_ids:
+            if target_parent_id == gid:
+                errors.append({"child_id": gid, "error": "Cannot link group to itself"})
+                continue
+            if target_parent_id != 0 and has_hierarchy_cycle(cursor, target_parent_id, gid):
+                errors.append({"child_id": gid, "error": "Would create cycle"})
+                continue
+
+            cursor.execute("DELETE FROM search_hierarchy_edges WHERE child_id = ?", (gid,))
+            if target_parent_id != 0:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO search_hierarchy_edges (parent_id, child_id) VALUES (?, ?)",
+                    (target_parent_id, gid)
+                )
+                cursor.execute(
+                    "UPDATE search_groups SET parent_id = ? WHERE id = ?",
+                    (target_parent_id, gid)
+                )
+            else:
+                cursor.execute("UPDATE search_groups SET parent_id = NULL WHERE id = ?", (gid,))
+            moved_count += 1
+
+        rebuild_hierarchy_from_edges(conn)
 
         new_version = increment_rules_version(
             conn, data.client_id, "batch_move_hierarchy",
-            f"group_ids={data.group_ids}, new_parent_id={data.new_parent_id}, affected={affected}"
+            f"group_ids={group_ids}, new_parent_id={target_parent_id}, moved={moved_count}"
         )
         conn.commit()
 
-        return {"success": True, "new_version": new_version, "affected": affected}
+        return {
+            "success": moved_count > 0,
+            "version_id": new_version,
+            "moved": moved_count,
+            "errors": errors
+        }
 
 
 def rebuild_hierarchy_for_group(cursor, group_id: int, new_parent_id: int | None):
@@ -682,6 +849,7 @@ async def legacy_add_group(data: LegacyGroupAddRequest):
         raise HTTPException(status_code=400, detail="group_name cannot be empty")
 
     with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -689,11 +857,7 @@ async def legacy_add_group(data: LegacyGroupAddRequest):
             (name, None, 1 if data.is_enabled else 0)
         )
         group_id = cursor.lastrowid
-
-        cursor.execute(
-            "INSERT INTO search_hierarchy (ancestor_id, descendant_id, depth) VALUES (?, ?, 0)",
-            (group_id, group_id)
-        )
+        rebuild_hierarchy_from_edges(conn)
 
         new_version = increment_rules_version(
             conn, data.client_id, "create_group",
@@ -770,16 +934,28 @@ async def legacy_delete_group(data: LegacyGroupDeleteRequest):
         return create_conflict_response(data.base_version, current_version)
 
     with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM search_groups WHERE id = ?", (data.group_id,))
         row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="规则组不存在")
 
-        cursor.execute("SELECT COUNT(*) as cnt FROM search_hierarchy WHERE ancestor_id = ?", (data.group_id,))
-        delete_count = cursor.fetchone()['cnt']
+        all_group_ids = collect_descendants(cursor, data.group_id)
+        deleted_count = len(all_group_ids)
 
-        cursor.execute("DELETE FROM search_groups WHERE id = ?", (data.group_id,))
+        if all_group_ids:
+            placeholders = ",".join(["?"] * len(all_group_ids))
+            cursor.execute(
+                f"DELETE FROM search_keywords WHERE group_id IN ({placeholders})",
+                all_group_ids
+            )
+            remove_edges_for_groups(cursor, all_group_ids)
+            cursor.execute(
+                f"DELETE FROM search_groups WHERE id IN ({placeholders})",
+                all_group_ids
+            )
+            rebuild_hierarchy_from_edges(conn)
 
         new_version = increment_rules_version(
             conn, data.client_id, "delete_group",
@@ -787,7 +963,7 @@ async def legacy_delete_group(data: LegacyGroupDeleteRequest):
         )
         conn.commit()
 
-        return {"success": True, "version_id": new_version, "deleted_count": delete_count}
+        return {"success": True, "version_id": new_version, "deleted_count": deleted_count}
 
 
 @router.post("/group/batch")
@@ -804,6 +980,7 @@ async def legacy_batch_group(data: LegacyGroupBatchRequest):
         raise HTTPException(status_code=400, detail="Invalid action")
 
     with get_connection() as conn:
+        ensure_hierarchy_edges(conn)
         cursor = conn.cursor()
         affected = 0
 
@@ -817,10 +994,24 @@ async def legacy_batch_group(data: LegacyGroupBatchRequest):
                 if cursor.rowcount > 0:
                     affected += 1
         else:
+            all_group_ids: list[int] = []
             for gid in data.group_ids:
-                cursor.execute("DELETE FROM search_groups WHERE id = ?", (gid,))
-                if cursor.rowcount > 0:
-                    affected += 1
+                all_group_ids.extend(collect_descendants(cursor, gid))
+            all_group_ids = list(set(all_group_ids))
+
+            if all_group_ids:
+                placeholders = ",".join(["?"] * len(all_group_ids))
+                cursor.execute(
+                    f"DELETE FROM search_keywords WHERE group_id IN ({placeholders})",
+                    all_group_ids
+                )
+                remove_edges_for_groups(cursor, all_group_ids)
+                cursor.execute(
+                    f"DELETE FROM search_groups WHERE id IN ({placeholders})",
+                    all_group_ids
+                )
+                rebuild_hierarchy_from_edges(conn)
+                affected = len(all_group_ids)
 
         new_version = increment_rules_version(
             conn, data.client_id, "batch_group",
@@ -845,7 +1036,11 @@ async def legacy_add_keyword(data: LegacyKeywordAddRequest):
             raise HTTPException(status_code=404, detail="规则组不存在")
 
         cursor.execute(
-            "INSERT INTO search_keywords (keyword, group_id) VALUES (?, ?)",
+            "DELETE FROM search_keywords WHERE group_id = ? AND keyword = ?",
+            (data.group_id, data.keyword)
+        )
+        cursor.execute(
+            "INSERT INTO search_keywords (keyword, group_id, enabled) VALUES (?, ?, 1)",
             (data.keyword, data.group_id)
         )
 

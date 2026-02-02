@@ -68,23 +68,27 @@ export interface AdvancedSearchRequest {
 export interface AdvancedSearchResponse {
   total: number
   results: {
-    id: number
     md5: string
     filename: string
     tags: string[]
-    width: number
-    height: number
-    file_size: number
+    w: number
+    h: number
+    size: number
     is_trash: boolean
   }[]
 }
 
 export interface SearchResponse {
-  images: MemeImage[]
   total: number
-  page: number
-  page_size: number
-  expanded_tags?: string[]
+  results: {
+    md5: string
+    filename: string
+    tags: string[]
+    w: number
+    h: number
+    size: number
+    is_trash: boolean
+  }[]
 }
 
 // 规则树相关类型
@@ -93,6 +97,30 @@ export interface RuleKeyword {
   keyword: string
   group_id: number
   enabled: boolean
+}
+
+export interface LegacyRuleGroup {
+  group_id: number
+  group_name: string
+  is_enabled: number | boolean
+}
+
+export interface LegacyRuleKeyword {
+  keyword: string
+  group_id: number
+  is_enabled: number | boolean
+}
+
+export interface LegacyRuleHierarchy {
+  parent_id: number
+  child_id: number
+}
+
+export interface LegacyRulesData {
+  version_id: number
+  groups: LegacyRuleGroup[]
+  keywords: LegacyRuleKeyword[]
+  hierarchy: LegacyRuleHierarchy[]
 }
 
 export interface RuleGroup {
@@ -110,6 +138,7 @@ export interface RuleGroup {
 export interface RulesTree {
   version: number
   groups: RuleGroup[]
+  hierarchy?: LegacyRuleHierarchy[]
 }
 
 // CAS 相关类型

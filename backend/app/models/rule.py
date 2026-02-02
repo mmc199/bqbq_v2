@@ -104,8 +104,10 @@ class HierarchyRemoveRequest(BaseModel):
 
 class HierarchyBatchMoveRequest(BaseModel):
     """批量移动层级请求"""
-    group_ids: list[int]
+    group_ids: list[int] | None = None
+    child_ids: list[int] | None = None  # 旧项目字段
     new_parent_id: int | None = None
+    parent_id: int | None = None  # 旧项目字段
     client_id: str
     base_version: int
 

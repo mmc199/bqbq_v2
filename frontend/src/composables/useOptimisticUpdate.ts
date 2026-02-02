@@ -80,7 +80,10 @@ export function useOptimisticUpdate() {
         console.log(`[OptimisticUpdate] 版本冲突，重试 ${retries}/${MAX_RETRIES}，期间有 ${result.conflict.unique_modifiers} 个修改者`)
 
         // 使用冲突响应中的最新数据更新本地状态
-        globalStore.updateRulesVersion(result.conflict.current_version)
+        const latestVersion = result.conflict.latest_data?.version_id
+        if (typeof latestVersion === 'number') {
+          globalStore.updateRulesVersion(latestVersion)
+        }
 
         if (retries < MAX_RETRIES) {
           // 冲突：使用最新数据更新本地状态

@@ -4,7 +4,7 @@
  * 复刻旧项目：覆盖层标签编辑、复制标签、回收站软删除、原图加载
  */
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
-import { Download, Copy, Trash2, RefreshCw } from 'lucide-vue-next'
+import { Download, Trash2, RefreshCw, Check } from 'lucide-vue-next'
 import TagInput from '@/components/TagInput.vue'
 import type { MemeImage } from '@/types'
 
@@ -17,7 +17,6 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'copy': [image: MemeImage]
   'delete': [image: MemeImage]
   'applyTempTags': [image: MemeImage]
   'updateTags': [image: MemeImage, tags: string[]]
@@ -33,11 +32,13 @@ const editInputValue = ref('')
 const tagInputRef = ref<InstanceType<typeof TagInput> | null>(null)
 const editorRef = ref<HTMLElement | null>(null)
 const cardRef = ref<HTMLElement | null>(null)
+const copySuccess = ref(false)
+let copyResetTimer: number | null = null
 
 const EAGER_LOAD_COUNT = 4
 
 const imageSrc = computed(() => `/images/${props.image.filename}`)
-const thumbnailSrc = computed(() => `/thumbnails/${props.image.md5}_thumbnail.jpg`)
+const thumbnailSrc = computed(() => `/thumbnails/${props.image.filename}`)
 
 const currentSrc = computed(() => {
   return currentSrcType.value === 'original' ? imageSrc.value : thumbnailSrc.value
@@ -63,12 +64,12 @@ const extLabel = computed(() => {
 })
 
 const sizeLabel = computed(() => {
-  if (!props.image.file_size) return ''
+  if (props.image.file_size === undefined || props.image.file_size === null) return ''
   return (props.image.file_size / (1024 * 1024)).toFixed(3) + 'MB'
 })
 
 const dimensionLabel = computed(() => {
-  if (!props.image.width || !props.image.height) return ''
+  if (props.image.width === undefined || props.image.height === undefined) return ''
   return `${props.image.width}x${props.image.height}`
 })
 
@@ -86,8 +87,45 @@ function handleImageClick() {
   loadOriginalImage()
 }
 
+function copyText(text: string) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text)
+  }
+  return new Promise<void>((resolve, reject) => {
+    const textArea = document.createElement('textarea')
+    textArea.value = text
+    textArea.style.position = 'fixed'
+    textArea.style.left = '-9999px'
+    document.body.appendChild(textArea)
+    textArea.focus()
+    textArea.select()
+    try {
+      document.execCommand('copy')
+      document.body.removeChild(textArea)
+      resolve()
+    } catch (err) {
+      document.body.removeChild(textArea)
+      reject(err)
+    }
+  })
+}
+
 function handleCopy() {
-  emit('copy', props.image)
+  const tagsText = (props.image.tags || '').trim()
+  copyText(tagsText)
+    .then(() => {
+      if (copyResetTimer !== null) {
+        window.clearTimeout(copyResetTimer)
+      }
+      copySuccess.value = true
+      copyResetTimer = window.setTimeout(() => {
+        copySuccess.value = false
+        copyResetTimer = null
+      }, 1500)
+    })
+    .catch((err) => {
+      console.error('Failed to copy', err)
+    })
 }
 
 function handleDelete() {
@@ -167,6 +205,9 @@ function finishEdit() {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleOutsideClick)
+  if (copyResetTimer !== null) {
+    window.clearTimeout(copyResetTimer)
+  }
 })
 </script>
 
@@ -174,16 +215,14 @@ onBeforeUnmount(() => {
   <div
     ref="cardRef"
     :class="[
-      'meme-card group relative rounded-xl overflow-hidden shadow-md aspect-square',
-      isTrashImage && !isTrash ? 'is-trash' : 'bg-white',
+      'meme-card group relative rounded-xl overflow-hidden aspect-square bg-slate-200 shadow-sm hover:shadow-lg',
+      isTrashImage ? 'is-trash' : '',
       imageError ? 'load-failed' : '',
       isTempMode ? 'temp-mode-card' : ''
     ]"
   >
-    <div v-if="isTempMode" class="temp-mode-pill">批量打标</div>
-
     <img
-      class="image-element w-full h-full object-cover cursor-pointer"
+      class="image-element w-full h-full object-contain"
       :src="currentSrc"
       alt=""
       :loading="loadingStrategy"
@@ -197,7 +236,23 @@ onBeforeUnmount(() => {
       v-if="isOriginalLoading"
       class="loader-element absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white drop-shadow-md z-10"
     >
-      <RefreshCw class="w-7 h-7 animate-spin-fast" />
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        class="w-8 h-8 animate-spin-fast"
+      >
+        <path d="M5 22h14" />
+        <path d="M5 2h14" />
+        <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22" />
+        <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
+      </svg>
     </div>
 
     <!-- Error Overlay -->
@@ -206,8 +261,22 @@ onBeforeUnmount(() => {
       class="error-overlay absolute inset-0 text-red-500 flex flex-col items-center justify-center text-center p-4 z-20 cursor-pointer rounded-xl transition-opacity hover:opacity-90"
       @click.stop="loadOriginalImage"
     >
-      加载失败
-      <span class="text-xs text-slate-400 mt-1">点击重试</span>
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        class="w-10 h-10"
+      >
+        <path d="m21.73 18-9-15-9 15z" />
+        <path d="M12 9v4" />
+        <path d="M12 17h.01" />
+      </svg>
     </div>
 
     <!-- 顶部工具栏 -->
@@ -222,10 +291,30 @@ onBeforeUnmount(() => {
       </a>
       <div class="flex gap-2">
         <button
-          class="copy-btn p-2 bg-black/40 text-white rounded-lg hover:bg-black/60 transition"
+          :class="[
+            'copy-btn p-2 rounded-lg transition',
+            copySuccess ? 'bg-green-500 text-white' : 'bg-black/40 text-white hover:bg-black/60'
+          ]"
           @click.stop="handleCopy"
         >
-          <Copy class="w-5 h-5" />
+          <Check v-if="copySuccess" class="w-5 h-5" />
+          <svg
+            v-else
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="w-5 h-5"
+          >
+            <rect width="8" height="14" x="4" y="8" rx="2" />
+            <path d="M15 4h-2a2 2 0 0 0-2 2v2" />
+            <rect width="8" height="14" x="12" y="2" rx="2" ry="2" />
+          </svg>
         </button>
         <button
           :class="[

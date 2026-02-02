@@ -54,7 +54,7 @@ async def check_md5_exists(md5: str, refresh_time: bool = False):
     """检查 MD5 是否已存在"""
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, filename FROM images WHERE md5 = ?", (md5,))
+        cursor.execute("SELECT filename FROM images WHERE md5 = ?", (md5,))
         row = cursor.fetchone()
 
         if row:
@@ -62,15 +62,14 @@ async def check_md5_exists(md5: str, refresh_time: bool = False):
             if refresh_time:
                 # 刷新时间戳
                 cursor.execute(
-                    "UPDATE images SET created_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (row['id'],)
+                    "UPDATE images SET created_at = CURRENT_TIMESTAMP WHERE md5 = ?",
+                    (md5,)
                 )
                 conn.commit()
                 time_refreshed = True
 
             return {
                 "exists": True,
-                "id": row['id'],
                 "filename": row['filename'],
                 "time_refreshed": time_refreshed
             }
@@ -147,20 +146,25 @@ async def create_image(data: ImageCreate):
 async def upload_image(file: UploadFile = File(...)):
     """旧项目兼容：Multipart 上传"""
     if not file.filename:
-        return {"success": False, "error": "文件名为空"}
+        return {"success": False}
 
     image_bytes = await file.read()
     if not image_bytes:
-        return {"success": False, "error": "空文件"}
+        return {"success": False}
 
     md5 = hashlib.md5(image_bytes).hexdigest()
 
     # 检查是否存在
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM images WHERE md5 = ?", (md5,))
+        cursor.execute("SELECT 1 FROM images WHERE md5 = ?", (md5,))
         if cursor.fetchone():
-            return {"success": False, "error": "图片已存在"}
+            cursor.execute(
+                "UPDATE images SET created_at = CURRENT_TIMESTAMP WHERE md5 = ?",
+                (md5,)
+            )
+            conn.commit()
+            return {"success": False, "msg": "Duplicate image (timestamp refreshed)"}
 
         # 读取尺寸
         width, height = 0, 0
@@ -173,7 +177,11 @@ async def upload_image(file: UploadFile = File(...)):
         # 保存原图
         images_path = Path(settings.images_path)
         images_path.mkdir(parents=True, exist_ok=True)
-        file_path = images_path / file.filename
+        ext = Path(file.filename).suffix.lower()
+        if not ext:
+            ext = ".jpg"
+        filename = f"{md5}{ext}"
+        file_path = images_path / filename
         file_path.write_bytes(image_bytes)
 
         # 生成缩略图
@@ -183,11 +191,11 @@ async def upload_image(file: UploadFile = File(...)):
         cursor.execute(
             """INSERT INTO images (filename, md5, tags, file_size, width, height)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (file.filename, md5, "", len(image_bytes), width, height)
+            (filename, md5, "", len(image_bytes), width, height)
         )
         conn.commit()
 
-    return {"success": True, "msg": "上传成功"}
+    return {"success": True, "msg": md5}
 
 
 @router.put("/{image_id}/tags")

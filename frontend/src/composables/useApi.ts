@@ -1,7 +1,18 @@
 /**
  * API 调用封装
  */
-import type { ApiResponse, SearchRequest, SearchResponse, MemeImage, RulesTree, AdvancedSearchRequest, AdvancedSearchResponse } from '@/types'
+import type {
+  ApiResponse,
+  SearchRequest,
+  SearchResponse,
+  MemeImage,
+  RulesTree,
+  AdvancedSearchRequest,
+  AdvancedSearchResponse,
+  LegacyRulesData,
+  RuleGroup,
+  RuleKeyword,
+} from '@/types'
 
 const API_BASE = '/api'
 
@@ -9,9 +20,8 @@ const API_BASE = '/api'
 export interface ConflictResponse {
   success: false
   error: 'conflict'
-  detail: string
-  current_version: number
-  latest_data: RulesTree
+  status: number
+  latest_data: LegacyRulesData
   unique_modifiers: number
 }
 
@@ -33,9 +43,12 @@ async function request<T>(
 
     // 处理 409 冲突响应（与旧项目保持一致）
     if (response.status === 409) {
+      const message = data?.error === 'conflict'
+        ? '版本冲突'
+        : (data?.detail || data?.error || '版本冲突')
       return {
         success: false,
-        error: `HTTP 409: ${data.detail || '版本冲突'}`,
+        error: `HTTP 409: ${message}`,
         conflict: data as ConflictResponse,
       }
     }
@@ -66,7 +79,7 @@ export function useImageApi() {
 
   // 高级搜索（兼容旧项目二维数组格式）
   async function advancedSearch(params: AdvancedSearchRequest): Promise<ApiResponse<AdvancedSearchResponse>> {
-    return request<AdvancedSearchResponse>('/search/advanced', {
+    return request<AdvancedSearchResponse>('/search', {
       method: 'POST',
       body: JSON.stringify(params),
     })
@@ -132,6 +145,84 @@ export function useImageApi() {
 
 // 规则树相关 API
 export function useRulesApi() {
+  function buildRulesTreeFromLegacy(data: LegacyRulesData | null | undefined): RulesTree {
+    const safeData = data ?? { version_id: 0, groups: [], keywords: [], hierarchy: [] }
+    const groupMap = new Map<number, RuleGroup>()
+    const groups = Array.isArray(safeData.groups) ? safeData.groups : []
+    const keywords = Array.isArray(safeData.keywords) ? safeData.keywords : []
+    const hierarchy = Array.isArray(safeData.hierarchy) ? safeData.hierarchy : []
+
+    groups.forEach((group) => {
+      const rawId = (group as { group_id?: unknown; id?: unknown }).group_id
+        ?? (group as { id?: unknown }).id
+      const id = typeof rawId === 'number' ? rawId : Number(rawId)
+      if (!Number.isFinite(id)) return
+      groupMap.set(id, {
+        id,
+        name: (group as { group_name?: string; name?: string }).group_name
+          ?? (group as { name?: string }).name
+          ?? '',
+        enabled: !!((group as { is_enabled?: unknown; enabled?: unknown }).is_enabled
+          ?? (group as { enabled?: unknown }).enabled),
+        keywords: [],
+        children: [],
+      })
+    })
+
+    let keywordId = 1
+    keywords.forEach((kw) => {
+      const rawGroupId = (kw as { group_id?: unknown; groupId?: unknown }).group_id
+        ?? (kw as { groupId?: unknown }).groupId
+      const groupId = typeof rawGroupId === 'number' ? rawGroupId : Number(rawGroupId)
+      if (!Number.isFinite(groupId)) return
+      const target = groupMap.get(groupId)
+      if (!target) return
+      const keywordText = (kw as { keyword?: string; text?: string }).keyword
+        ?? (kw as { text?: string }).text
+        ?? ''
+      const keyword: RuleKeyword = {
+        id: keywordId++,
+        keyword: keywordText,
+        group_id: groupId,
+        enabled: !!((kw as { is_enabled?: unknown; enabled?: unknown }).is_enabled
+          ?? (kw as { enabled?: unknown }).enabled),
+      }
+      target.keywords.push(keyword)
+    })
+
+    const hasParent = new Set<number>()
+    hierarchy.forEach((rel) => {
+      if (!rel) return
+      const rawParentId = (rel as { parent_id?: unknown; parentId?: unknown }).parent_id
+        ?? (rel as { parentId?: unknown }).parentId
+      const rawChildId = (rel as { child_id?: unknown; childId?: unknown }).child_id
+        ?? (rel as { childId?: unknown }).childId
+      const parentId = typeof rawParentId === 'number' ? rawParentId : Number(rawParentId)
+      const childId = typeof rawChildId === 'number' ? rawChildId : Number(rawChildId)
+      if (!Number.isFinite(childId)) return
+      if (parentId === 0 || Number.isNaN(parentId)) return
+      const parent = groupMap.get(parentId)
+      const child = groupMap.get(childId)
+      if (parent && child) {
+        parent.children.push(child)
+        hasParent.add(child.id)
+      }
+    })
+
+    const roots: RuleGroup[] = []
+    groupMap.forEach((group, id) => {
+      if (!hasParent.has(id)) {
+        roots.push(group)
+      }
+    })
+
+    return {
+      version: typeof safeData.version_id === 'number' ? safeData.version_id : 0,
+      groups: roots,
+      hierarchy,
+    }
+  }
+
   // 获取规则树
   async function getRulesTree(currentVersion?: number): Promise<ApiResponse<RulesTree> & { notModified?: boolean }> {
     const headers: Record<string, string> = {}
@@ -150,7 +241,8 @@ export function useRulesApi() {
     }
 
     const data = await response.json()
-    return { success: true, data }
+    const legacyData = (data?.latest_data ?? data?.data ?? data) as LegacyRulesData
+    return { success: true, data: buildRulesTreeFromLegacy(legacyData) }
   }
 
   // 创建规则组
@@ -160,15 +252,46 @@ export function useRulesApi() {
     clientId: string,
     baseVersion: number
   ): Promise<ApiResponse<{ id: number; new_version: number }>> {
-    return request<{ id: number; new_version: number }>('/rules/groups', {
+    const result = await request<{ version_id: number; new_id: number }>('/rules/group/add', {
       method: 'POST',
       body: JSON.stringify({
-        name,
-        parent_id: parentId,
+        group_name: name,
+        is_enabled: 1,
         client_id: clientId,
         base_version: baseVersion,
       }),
     })
+
+    if (!result.success || !result.data) {
+      return result as ApiResponse<{ id: number; new_version: number }>
+    }
+
+    let newVersion = result.data.version_id
+    if (parentId !== null) {
+      const moveResult = await request<{ version_id: number }>('/rules/hierarchy/add', {
+        method: 'POST',
+        body: JSON.stringify({
+          child_id: result.data.new_id,
+          parent_id: parentId,
+          client_id: clientId,
+          base_version: newVersion,
+        }),
+      })
+
+      if (moveResult.success && moveResult.data?.version_id) {
+        newVersion = moveResult.data.version_id
+      } else if (!moveResult.success) {
+        return moveResult as ApiResponse<{ id: number; new_version: number }>
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        id: result.data.new_id,
+        new_version: newVersion,
+      },
+    }
   }
 
   // 添加关键词
@@ -178,14 +301,27 @@ export function useRulesApi() {
     clientId: string,
     baseVersion: number
   ): Promise<ApiResponse<{ id: number; new_version: number }>> {
-    return request<{ id: number; new_version: number }>(`/rules/groups/${groupId}/keywords`, {
+    const result = await request<{ version_id: number }>('/rules/keyword/add', {
       method: 'POST',
       body: JSON.stringify({
+        group_id: groupId,
         keyword,
         client_id: clientId,
         base_version: baseVersion,
       }),
     })
+
+    if (!result.success || !result.data) {
+      return result as ApiResponse<{ id: number; new_version: number }>
+    }
+
+    return {
+      success: true,
+      data: {
+        id: -1,
+        new_version: result.data.version_id,
+      },
+    }
   }
 
   // 删除规则组
@@ -193,31 +329,58 @@ export function useRulesApi() {
     groupId: number,
     clientId: string,
     baseVersion: number
-  ): Promise<ApiResponse<{ new_version: number }>> {
-    return request<{ new_version: number }>(`/rules/groups/${groupId}`, {
-      method: 'DELETE',
+  ): Promise<ApiResponse<{ new_version: number; deleted_count?: number }>> {
+    const result = await request<{ version_id: number; deleted_count?: number }>('/rules/group/delete', {
+      method: 'POST',
       body: JSON.stringify({
+        group_id: groupId,
         client_id: clientId,
         base_version: baseVersion,
       }),
     })
+
+    if (!result.success || !result.data) {
+      return result as ApiResponse<{ new_version: number; deleted_count?: number }>
+    }
+
+    return {
+      success: true,
+      data: {
+        new_version: result.data.version_id,
+        deleted_count: result.data.deleted_count,
+      },
+    }
   }
 
   // 重命名规则组
   async function renameGroup(
     groupId: number,
     name: string,
+    enabled: boolean,
     clientId: string,
     baseVersion: number
   ): Promise<ApiResponse<{ new_version: number }>> {
-    return request<{ new_version: number }>(`/rules/groups/${groupId}`, {
-      method: 'PUT',
+    const result = await request<{ version_id: number }>('/rules/group/update', {
+      method: 'POST',
       body: JSON.stringify({
-        name,
+        group_id: groupId,
+        group_name: name,
+        is_enabled: enabled ? 1 : 0,
         client_id: clientId,
         base_version: baseVersion,
       }),
     })
+
+    if (!result.success || !result.data) {
+      return result as ApiResponse<{ new_version: number }>
+    }
+
+    return {
+      success: true,
+      data: {
+        new_version: result.data.version_id,
+      },
+    }
   }
 
   // 移动规则组到新父节点
@@ -227,14 +390,24 @@ export function useRulesApi() {
     clientId: string,
     baseVersion: number
   ): Promise<ApiResponse<{ new_version: number }>> {
-    return request<{ new_version: number }>(`/rules/groups/${groupId}`, {
-      method: 'PUT',
+    const result = await request<{ version_id: number }>('/rules/hierarchy/add', {
+      method: 'POST',
       body: JSON.stringify({
+        child_id: groupId,
         parent_id: newParentId === null ? 0 : newParentId,
         client_id: clientId,
         base_version: baseVersion,
       }),
     })
+
+    if (!result.success || !result.data) {
+      return result as ApiResponse<{ new_version: number }>
+    }
+
+    return {
+      success: true,
+      data: { new_version: result.data.version_id },
+    }
   }
 
   // 添加层级关系
@@ -244,7 +417,7 @@ export function useRulesApi() {
     clientId: string,
     baseVersion: number
   ): Promise<ApiResponse<{ new_version: number }>> {
-    return request<{ new_version: number }>('/rules/hierarchy/add', {
+    const result = await request<{ version_id: number }>('/rules/hierarchy/add', {
       method: 'POST',
       body: JSON.stringify({
         child_id: childId,
@@ -253,6 +426,14 @@ export function useRulesApi() {
         base_version: baseVersion,
       }),
     })
+    if (!result.success || !result.data) {
+      return result as ApiResponse<{ new_version: number }>
+    }
+
+    return {
+      success: true,
+      data: { new_version: result.data.version_id },
+    }
   }
 
   // 移除层级关系（移动到根级别）
@@ -262,7 +443,7 @@ export function useRulesApi() {
     clientId: string,
     baseVersion: number
   ): Promise<ApiResponse<{ new_version: number }>> {
-    return request<{ new_version: number }>('/rules/hierarchy/remove', {
+    const result = await request<{ version_id: number }>('/rules/hierarchy/remove', {
       method: 'POST',
       body: JSON.stringify({
         child_id: childId,
@@ -271,17 +452,28 @@ export function useRulesApi() {
         base_version: baseVersion,
       }),
     })
+    if (!result.success || !result.data) {
+      return result as ApiResponse<{ new_version: number }>
+    }
+
+    return {
+      success: true,
+      data: { new_version: result.data.version_id },
+    }
   }
 
   // 删除关键词
   async function deleteKeyword(
-    keywordId: number,
+    groupId: number,
+    keyword: string,
     clientId: string,
     baseVersion: number
-  ): Promise<ApiResponse<{ new_version: number }>> {
-    return request<{ new_version: number }>(`/rules/keywords/${keywordId}`, {
-      method: 'DELETE',
+  ): Promise<ApiResponse<{ version_id: number }>> {
+    return request<{ version_id: number }>('/rules/keyword/remove', {
+      method: 'POST',
       body: JSON.stringify({
+        group_id: groupId,
+        keyword,
         client_id: clientId,
         base_version: baseVersion,
       }),
@@ -289,20 +481,8 @@ export function useRulesApi() {
   }
 
   // 切换关键词启用状态
-  async function toggleKeyword(
-    keywordId: number,
-    enabled: boolean,
-    clientId: string,
-    baseVersion: number
-  ): Promise<ApiResponse<{ new_version: number }>> {
-    return request<{ new_version: number }>(`/rules/keywords/${keywordId}/toggle`, {
-      method: 'POST',
-      body: JSON.stringify({
-        enabled,
-        client_id: clientId,
-        base_version: baseVersion,
-      }),
-    })
+  async function toggleKeyword() {
+    return { success: false, error: 'Keyword toggle not supported' }
   }
 
   // 切换规则组启用状态
@@ -312,14 +492,26 @@ export function useRulesApi() {
     clientId: string,
     baseVersion: number
   ): Promise<ApiResponse<{ new_version: number }>> {
-    return request<{ new_version: number }>(`/rules/groups/${groupId}/toggle`, {
+    const result = await request<{ version_id: number }>('/rules/group/toggle', {
       method: 'POST',
       body: JSON.stringify({
-        enabled,
+        group_id: groupId,
+        is_enabled: enabled ? 1 : 0,
         client_id: clientId,
         base_version: baseVersion,
       }),
     })
+
+    if (!result.success || !result.data) {
+      return result as ApiResponse<{ new_version: number }>
+    }
+
+    return {
+      success: true,
+      data: {
+        new_version: result.data.version_id,
+      },
+    }
   }
 
   // 批量操作规则组
@@ -329,17 +521,48 @@ export function useRulesApi() {
     clientId: string,
     baseVersion: number,
     targetParentId?: number | null
-  ): Promise<ApiResponse<{ new_version: number }>> {
-    return request<{ new_version: number }>('/rules/groups/batch', {
+  ): Promise<ApiResponse<{ new_version: number; affected_count?: number }>> {
+    if (action === 'move') {
+      const result = await request<{ version_id: number; success?: boolean; moved?: number; errors?: unknown[] }>('/rules/hierarchy/batch_move', {
+        method: 'POST',
+        body: JSON.stringify({
+          group_ids: groupIds,
+          new_parent_id: targetParentId ?? 0,
+          client_id: clientId,
+          base_version: baseVersion,
+        }),
+      })
+      if (!result.success || !result.data) {
+        return result as ApiResponse<{ new_version: number; affected_count?: number }>
+      }
+
+      return {
+        success: true,
+        data: { new_version: result.data.version_id },
+      }
+    }
+
+    const result = await request<{ version_id: number; affected_count?: number }>('/rules/group/batch', {
       method: 'POST',
       body: JSON.stringify({
         group_ids: groupIds,
         action,
-        target_parent_id: targetParentId,
         client_id: clientId,
         base_version: baseVersion,
       }),
     })
+
+    if (!result.success || !result.data) {
+      return result as ApiResponse<{ new_version: number; affected_count?: number }>
+    }
+
+    return {
+      success: true,
+      data: {
+        new_version: result.data.version_id,
+        affected_count: result.data.affected_count,
+      },
+    }
   }
 
   // 批量移动层级
@@ -348,8 +571,8 @@ export function useRulesApi() {
     newParentId: number | null,
     clientId: string,
     baseVersion: number
-  ): Promise<ApiResponse<{ new_version: number }>> {
-    return request<{ new_version: number }>('/rules/hierarchy/batch_move', {
+  ): Promise<ApiResponse<{ new_version: number; moved?: number; errors?: unknown[] }>> {
+    const result = await request<{ version_id: number; success?: boolean; moved?: number; errors?: unknown[] }>('/rules/hierarchy/batch_move', {
       method: 'POST',
       body: JSON.stringify({
         group_ids: groupIds,
@@ -358,6 +581,18 @@ export function useRulesApi() {
         base_version: baseVersion,
       }),
     })
+    if (!result.success || !result.data) {
+      return result as ApiResponse<{ new_version: number; moved?: number; errors?: unknown[] }>
+    }
+
+    const apiSuccess = result.data.success !== undefined ? result.data.success : true
+    const moved = result.data.moved ?? groupIds.length
+    const errors = result.data.errors ?? []
+
+    return {
+      success: apiSuccess,
+      data: { new_version: result.data.version_id, moved, errors },
+    }
   }
 
   return {
@@ -390,30 +625,38 @@ export function useSystemApi() {
   }
 
   // 导出数据
-  async function exportData(): Promise<ApiResponse<Blob>> {
-    const response = await fetch(`${API_BASE}/export/all`)
-    if (!response.ok) {
-      return { success: false, error: `HTTP ${response.status}` }
-    }
-    const blob = await response.blob()
-    return { success: true, data: blob }
+  async function exportData(): Promise<ApiResponse<Record<string, unknown>>> {
+    return request<Record<string, unknown>>('/export/all')
   }
 
   // 导入数据
-  async function importData(file: File): Promise<ApiResponse<{ imported_images?: number; skipped_images?: number; message?: string }>> {
-    const formData = new FormData()
-    formData.append('file', file)
-
-    const response = await fetch(`${API_BASE}/import/all`, {
-      method: 'POST',
-      body: formData,
-    })
-
-    if (!response.ok) {
-      return { success: false, error: `HTTP ${response.status}` }
+  async function importData(file: File): Promise<ApiResponse<{ imported_images?: number; skipped_images?: number; message?: string; success?: boolean; error?: string }>> {
+    let payload: Record<string, unknown>
+    try {
+      const content = await file.text()
+      payload = JSON.parse(content) as Record<string, unknown>
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : '无效的 JSON 文件',
+      }
     }
 
-    return await response.json()
+    return request<{ imported_images?: number; skipped_images?: number; message?: string; success?: boolean; error?: string }>(
+      '/import/all',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    )
+  }
+
+  // 更新图片标签（旧项目兼容）
+  async function updateTags(md5: string, tags: string[]): Promise<ApiResponse<{ success: boolean }>> {
+    return request<{ success: boolean }>('/update_tags', {
+      method: 'POST',
+      body: JSON.stringify({ md5, tags }),
+    })
   }
 
   return {
@@ -421,5 +664,6 @@ export function useSystemApi() {
     getTagSuggestions,
     exportData,
     importData,
+    updateTags,
   }
 }

@@ -48,6 +48,7 @@ const emit = defineEmits<{
   updateSort: [sortBy: string]
   updateTagRange: [min: number | null, max: number | null]
   updateTempTags: [tags: string[]]
+  tempInputUpdate: [value: string]
 }>()
 
 const globalStore = useGlobalStore()
@@ -114,6 +115,7 @@ watch(localMaxTags, (val) => {
 const tagSliderRef = ref<HTMLElement | null>(null)
 const sliderInstance = ref<noUiSlider.API | null>(null)
 let sliderSyncing = false
+let tagRangeDebounceTimer: number | null = null
 
 function initTagSlider() {
   if (!tagSliderRef.value || sliderInstance.value) return
@@ -135,15 +137,21 @@ function initTagSlider() {
     if (handle === 0) {
       localMinTags.value = parsed
     } else {
-      localMaxTags.value = parsed >= SLIDER_MAX_VISUAL ? SLIDER_MAX_VISUAL : parsed
-      if (parsed >= SLIDER_MAX_VISUAL && maxInputValue.value === INFINITY_DISPLAY) {
-        localMaxTags.value = -1
+      if (parsed < SLIDER_MAX_VISUAL) {
+        localMaxTags.value = parsed
+      } else {
+        const currentVal = parseInt(maxInputValue.value, 10)
+        if (!Number.isNaN(currentVal) && currentVal > SLIDER_MAX_VISUAL) {
+          localMaxTags.value = currentVal
+        } else {
+          localMaxTags.value = -1
+        }
       }
     }
   })
 
   sliderInstance.value.on('change', () => {
-    emitCurrentRange()
+    emitCurrentRangeDebounced()
   })
 
   syncSliderHandles()
@@ -182,6 +190,16 @@ function emitCurrentRange() {
   emit('updateTagRange', nextMin, nextMax)
 }
 
+function emitCurrentRangeDebounced() {
+  if (tagRangeDebounceTimer !== null) {
+    window.clearTimeout(tagRangeDebounceTimer)
+  }
+  tagRangeDebounceTimer = window.setTimeout(() => {
+    emitCurrentRange()
+    tagRangeDebounceTimer = null
+  }, 300)
+}
+
 function handleMinInputChange() {
   let parsed = parseInt(minInputValue.value, 10)
   if (Number.isNaN(parsed) || parsed < 0) parsed = 0
@@ -213,6 +231,10 @@ watch(
 watch(localTempTags, (tags) => {
   emit('updateTempTags', [...tags])
 }, { deep: true })
+
+function handleTempInputUpdate(value: string) {
+  emit('tempInputUpdate', value)
+}
 
 const isDragging = ref(false)
 const hasMoved = ref(false)
@@ -358,6 +380,10 @@ onBeforeUnmount(() => {
     sliderInstance.value.destroy()
     sliderInstance.value = null
   }
+  if (tagRangeDebounceTimer !== null) {
+    window.clearTimeout(tagRangeDebounceTimer)
+    tagRangeDebounceTimer = null
+  }
   document.removeEventListener('click', handleSortOutsideClick)
 })
 </script>
@@ -365,12 +391,15 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <div
-      v-show="showTagCountPanel"
       id="tag-count-panel"
-      class="fixed top-24 right-44 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 w-52 origin-top-right flex flex-col gap-3"
+      :class="[
+        'fixed top-24 right-44 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 w-52 origin-top-right flex-col',
+        showTagCountPanel ? 'flex' : 'hidden'
+      ]"
+      title="按标签数量筛选图片"
       @click.stop
     >
-      <div id="tag-count-header" class="flex items-center justify-between gap-1">
+      <div id="tag-count-header" class="flex items-center justify-between gap-1 mb-2">
         <input
           v-model="minInputValue"
           type="number"
@@ -380,7 +409,11 @@ onBeforeUnmount(() => {
           title="最少标签数"
           @change="handleMinInputChange"
         />
-        <span id="tag-count-title" class="text-xs font-bold text-slate-600 flex-1 text-center">标签数</span>
+        <span
+          id="tag-count-title"
+          class="text-xs font-bold text-slate-600 flex-1 text-center"
+          title="筛选指定标签数量范围的图片"
+        >标签数</span>
         <input
           v-model="maxInputValue"
           type="text"
@@ -399,17 +432,20 @@ onBeforeUnmount(() => {
       <div
         ref="tagSliderRef"
         id="tag-slider"
+        class="mx-1"
         title="拖动滑块调整标签数量范围"
       />
-      <div id="tag-count-display" class="text-xs text-slate-500 text-center">
-        {{ localMinTags }} - {{ localMaxTags < 0 ? '∞' : localMaxTags }}
-      </div>
+      <span id="tag-count-display" class="hidden">
+        {{ localMinTags }} - {{ localMaxTags }}
+      </span>
     </div>
 
     <div
-      v-show="showTempTagsPanel"
       id="temp-tag-panel"
-      class="fixed top-24 right-44 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 w-64 origin-top-right flex flex-col gap-2"
+      :class="[
+        'fixed top-24 right-44 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 w-64 origin-top-right flex-col gap-2 transform transition-all duration-200',
+        showTempTagsPanel ? 'flex' : 'hidden'
+      ]"
       @click.stop
     >
       <div class="text-xs font-bold text-slate-500 mb-1 flex items-center gap-2">
@@ -435,64 +471,81 @@ onBeforeUnmount(() => {
         v-model="localTempTags"
         suggestions-id="tag-suggestions"
         placeholder="输入临时标签..."
+        title="输入要批量粘贴的标签"
         theme="purple"
         :enable-excludes="false"
         container-class="flex flex-wrap gap-1 bg-slate-50 p-2 rounded border border-slate-200 min-h-[40px] cursor-text"
+        @input-update="handleTempInputUpdate"
       />
     </div>
 
     <div
-      v-show="showSortMenu"
       id="sort-menu"
-      class="fixed top-24 right-44 bg-white rounded-xl shadow-xl border border-slate-200 py-2 z-40 w-40 origin-top-right flex flex-col"
+      :class="[
+        'fixed top-24 right-44 bg-white rounded-xl shadow-xl border border-slate-200 py-2 z-40 w-40 origin-top-right flex-col',
+        showSortMenu ? 'flex' : 'hidden'
+      ]"
       ref="sortMenuRef"
       @click.stop
     >
       <button
         id="sort-date-desc"
-        class="sort-option px-4 py-2 text-sm text-left transition-colors"
-        :class="sortBy === 'date_desc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600 hover:bg-slate-100'"
+        data-sort="date_desc"
+        class="sort-option px-4 py-2 text-sm text-left hover:bg-slate-50 transition-colors"
+        :class="sortBy === 'date_desc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600'"
+        title="按添加时间降序排列"
         @click="selectSort('date_desc')"
       >📅 最新添加</button>
       <button
         id="sort-date-asc"
-        class="sort-option px-4 py-2 text-sm text-left transition-colors"
-        :class="sortBy === 'date_asc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600 hover:bg-slate-100'"
+        data-sort="date_asc"
+        class="sort-option px-4 py-2 text-sm text-left hover:bg-slate-50 transition-colors"
+        :class="sortBy === 'date_asc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600'"
+        title="按添加时间升序排列"
         @click="selectSort('date_asc')"
       >📅 最早添加</button>
       <button
         id="sort-size-desc"
-        class="sort-option px-4 py-2 text-sm text-left transition-colors"
-        :class="sortBy === 'size_desc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600 hover:bg-slate-100'"
+        data-sort="size_desc"
+        class="sort-option px-4 py-2 text-sm text-left hover:bg-slate-50 transition-colors"
+        :class="sortBy === 'size_desc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600'"
+        title="按文件大小降序排列"
         @click="selectSort('size_desc')"
       >💾 文件很大</button>
       <button
         id="sort-size-asc"
-        class="sort-option px-4 py-2 text-sm text-left transition-colors"
-        :class="sortBy === 'size_asc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600 hover:bg-slate-100'"
+        data-sort="size_asc"
+        class="sort-option px-4 py-2 text-sm text-left hover:bg-slate-50 transition-colors"
+        :class="sortBy === 'size_asc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600'"
+        title="按文件大小升序排列"
         @click="selectSort('size_asc')"
       >💾 文件很小</button>
       <button
         id="sort-resolution-desc"
-        class="sort-option px-4 py-2 text-sm text-left transition-colors"
-        :class="sortBy === 'resolution_desc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600 hover:bg-slate-100'"
+        data-sort="resolution_desc"
+        class="sort-option px-4 py-2 text-sm text-left hover:bg-slate-50 transition-colors"
+        :class="sortBy === 'resolution_desc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600'"
+        title="按分辨率(像素数)降序排列"
         @click="selectSort('resolution_desc')"
       >📐 高分辨率</button>
       <button
         id="sort-resolution-asc"
-        class="sort-option px-4 py-2 text-sm text-left transition-colors"
-        :class="sortBy === 'resolution_asc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600 hover:bg-slate-100'"
+        data-sort="resolution_asc"
+        class="sort-option px-4 py-2 text-sm text-left hover:bg-slate-50 transition-colors"
+        :class="sortBy === 'resolution_asc' ? 'bg-slate-50 text-blue-600 font-bold' : 'text-slate-600'"
+        title="按分辨率(像素数)升序排列"
         @click="selectSort('resolution_asc')"
       >📐 低分辨率</button>
     </div>
 
     <!-- FAB 展开状态：2×5 网格布局（旧项目） -->
-    <Transition name="fab-main">
-      <div
-        v-show="!isCollapsed"
-        id="fab-container"
-        class="fixed right-4 grid grid-cols-2 gap-3 z-50 top-[7rem] transition-all duration-300"
-      >
+    <div
+      id="fab-container"
+      :class="[
+        'fixed right-4 grid grid-cols-2 gap-3 z-50 top-[7rem] transition-all duration-300',
+        isCollapsed ? 'hidden' : ''
+      ]"
+    >
         <!-- Export JSON -->
         <button
           id="fab-export"
@@ -512,20 +565,26 @@ onBeforeUnmount(() => {
           @click="emit('import')"
         >
           <Upload class="w-6 h-6" />
+          <span class="absolute right-full mr-3 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap pointer-events-none">导入JSON</span>
         </button>
 
         <!-- Tag Count Filter -->
         <button
           id="fab-tag-count"
-          class="w-14 h-14 bg-white hover:bg-cyan-50 text-cyan-600 border border-cyan-200 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center flex-col relative group"
+          :class="[
+            'w-14 h-14 bg-white hover:bg-cyan-50 text-cyan-600 border border-cyan-200 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center flex-col relative group',
+            isTagRangeApplied ? 'bg-cyan-100 border-cyan-300' : ''
+          ]"
           title="标签数量筛选"
           @click.stop="toggleTagCountPanel"
         >
           <Hash class="w-5 h-5" />
           <span
-            v-show="isTagRangeApplied"
             id="tag-count-badge"
-            class="absolute -top-1 -right-1 bg-cyan-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+            :class="[
+              'absolute -top-1 -right-1 bg-cyan-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full',
+              isTagRangeApplied ? '' : 'hidden'
+            ]"
           >
             {{ appliedRangeText }}
           </span>
@@ -535,15 +594,22 @@ onBeforeUnmount(() => {
         <div id="temp-tags-btn-group" class="relative group">
           <button
             id="fab-temp-tags"
-            class="w-14 h-14 bg-white hover:bg-purple-50 text-purple-600 border border-purple-100 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative z-20"
+            :class="[
+              'w-14 h-14 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative z-20 border',
+              props.isTempTagMode
+                ? 'bg-purple-100 border-purple-400 text-purple-700'
+                : 'bg-white border-purple-100 text-purple-600 hover:bg-purple-50'
+            ]"
             :title="props.isTempTagMode ? '批量打标粘贴模式：已开启（点击关闭）' : '批量打标粘贴模式：已关闭（点击开启）'"
             @click="toggleTempMode"
           >
             <Stamp class="w-6 h-6" />
             <div
-              v-show="!props.isTempTagMode"
               id="fab-temp-tags-slash"
-              class="absolute inset-0 flex items-center justify-center pointer-events-none"
+              :class="[
+                'absolute inset-0 items-center justify-center pointer-events-none',
+                props.isTempTagMode ? 'hidden' : 'flex'
+              ]"
             >
               <div class="w-10 h-0.5 bg-red-500 rotate-45 rounded-full shadow-sm"></div>
             </div>
@@ -595,7 +661,13 @@ onBeforeUnmount(() => {
           @click="toggleTrashMode"
         >
           <Trash2 class="w-6 h-6" />
-          <div id="trash-active-dot" v-show="isTrashMode" class="absolute top-3 right-3 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></div>
+          <div
+            id="trash-active-dot"
+            :class="[
+              'absolute top-3 right-3 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white',
+              isTrashMode ? '' : 'hidden'
+            ]"
+          ></div>
         </button>
 
         <!-- Upload -->
@@ -661,34 +733,39 @@ onBeforeUnmount(() => {
           @click="toggleExpansion"
         >
           <TreePine class="w-6 h-6" />
-          <div v-show="!isExpansionEnabled" class="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div id="fab-tree-slash" class="w-10 h-0.5 bg-red-500 rotate-45 rounded-full shadow-sm"></div>
+          <div
+            id="fab-tree-slash"
+            :class="[
+              'absolute inset-0 items-center justify-center pointer-events-none',
+              isExpansionEnabled ? 'hidden' : 'flex'
+            ]"
+          >
+            <div class="w-10 h-0.5 bg-red-500 rotate-45 rounded-full shadow-sm"></div>
           </div>
           <span
-            v-show="showExpansionBadge"
             id="expansion-badge"
-            class="absolute -top-1 -right-1 bg-purple-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap"
+            :class="[
+              'absolute -top-1 -right-1 bg-purple-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap',
+              showExpansionBadge ? '' : 'hidden'
+            ]"
             :title="`原始 ${expandedOriginal} 个标签已膨胀为 ${expandedTotal} 个关键词`"
           >
             {{ expansionBadgeText }}
           </span>
         </button>
-      </div>
-    </Transition>
+    </div>
 
     <!-- Collapsed FAB Mini Strip -->
-    <Transition name="fab-mini">
-      <div
-        v-show="isCollapsed"
-        id="fab-mini-strip"
-        class="fixed z-50"
-        :style="{ top: miniStripTop + 'px', right: '0px' }"
-        ref="miniStripRef"
-        @pointerdown="handlePointerDown"
-        @pointermove="handlePointerMove"
-        @pointerup="handlePointerUp"
-        @pointercancel="handlePointerUp"
-      >
+    <div
+      id="fab-mini-strip"
+      :class="['fixed z-50', isCollapsed ? '' : 'hidden']"
+      :style="{ top: miniStripTop + 'px', right: '0px' }"
+      ref="miniStripRef"
+      @pointerdown="handlePointerDown"
+      @pointermove="handlePointerMove"
+      @pointerup="handlePointerUp"
+      @pointercancel="handlePointerUp"
+    >
         <div class="bg-white/80 backdrop-blur-sm border-l border-y border-slate-200 rounded-l-lg shadow-lg py-2 pl-1" style="width: 24px;">
           <div class="flex flex-col gap-1.5" style="margin-left: -16px;">
             <button
@@ -728,7 +805,6 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-      </div>
-    </Transition>
+    </div>
   </div>
 </template>

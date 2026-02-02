@@ -34,7 +34,7 @@ const searchText = ref('')
 const expandedIds = ref<Set<number>>(new Set())
 const groups = ref<RuleGroup[]>([])
 
-// 批量编辑状态
+// 批量编辑状态（旧版支持）
 const batchEditMode = ref(false)
 const selectedGroupIds = ref<Set<number>>(new Set())
 
@@ -54,6 +54,17 @@ const showRootInput = ref(false)
 const draggingId = ref<number | null>(null)
 const rootDropZoneActive = ref(false)
 const dragOverGapKey = ref<string | null>(null)
+const isHandlingHierarchyChange = ref(false)
+const touchDropTargetId = ref<number | null>(null)
+const touchDragPointerId = ref<number | null>(null)
+const touchDragActive = ref(false)
+const touchDragMoved = ref(false)
+const touchDragStartX = ref(0)
+const touchDragStartY = ref(0)
+const touchDragTimer = ref<number | null>(null)
+const touchDragJustEnded = ref(false)
+const touchDragSourceEl = ref<HTMLElement | null>(null)
+let touchListenersAttached = false
 
 // 自定义滚动条 refs
 const scrollContentRef = ref<HTMLDivElement | null>(null)
@@ -65,6 +76,7 @@ const cornerRef = ref<HTMLDivElement | null>(null)
 
 // 树容器 ref（用于滚动到匹配项）
 const treeContainerRef = ref<HTMLElement | null>(null)
+const searchInputRef = ref<HTMLInputElement | null>(null)
 
 let cleanupScrollSync: (() => void) | null = null
 let updateScrollbars: (() => void) | null = null
@@ -93,6 +105,35 @@ const treeSuggestions = computed(() => {
   return Array.from(set).sort()
 })
 
+function applyRulesTree(tree: RuleGroup[] | null, hierarchy?: { parent_id: number; child_id: number }[]) {
+  if (!tree) return
+  groups.value = tree
+
+  // 检测冲突/循环（优先使用旧项目层级关系）
+  const legacyHierarchy = hierarchy
+  const conflictResult = Array.isArray(legacyHierarchy)
+    ? detectLegacyConflicts(groups.value, legacyHierarchy)
+    : detectCycles(groups.value)
+  const { conflictNodes: conflicts, conflictRelations: relations } = conflictResult
+  conflictNodes.value = conflicts
+  conflictRelations.value = relations
+
+  if ((conflicts.length > 0 || relations.length > 0) && !hasShownConflictWarning.value) {
+    hasShownConflictWarning.value = true
+    toast.error(`⚠️ 检测到 ${relations.length} 条数据冲突，请在规则树底部查看并修复`)
+  } else if (conflicts.length === 0 && relations.length === 0) {
+    hasShownConflictWarning.value = false
+  }
+
+  const hasSavedExpanded = sessionStorage.getItem('bqbq_tree_expanded') !== null
+  if (!hasSavedExpanded) {
+    expandedIds.value = getAllGroupIds(groups.value)
+    globalStore.setExpandedGroupIds([...expandedIds.value])
+  } else {
+    expandedIds.value = new Set(globalStore.expandedGroupIds)
+  }
+}
+
 // 清除匹配标记
 function clearMatchFlags(nodes: RuleGroup[]) {
   nodes.forEach(node => {
@@ -101,22 +142,51 @@ function clearMatchFlags(nodes: RuleGroup[]) {
   })
 }
 
-// 过滤树并标记匹配
+// 过滤树并标记匹配（包含空名组匹配逻辑）
 function filterTree(nodes: RuleGroup[], search: string): RuleGroup[] {
+  const emptyKeywords = ['空', '无名', 'empty', '空组', '无名组']
   return nodes.reduce<RuleGroup[]>((acc, node) => {
-    const nameMatch = node.name.toLowerCase().includes(search)
+    const nodeName = node.name || ''
+    const isEmptyNameGroup = !nodeName || nodeName.trim() === ''
+    const emptyGroupMatch = isEmptyNameGroup
+      ? emptyKeywords.some(keyword => keyword.includes(search) || search.includes(keyword))
+      : false
+    const nameMatch = nodeName.toLowerCase().includes(search)
     const keywordMatch = node.keywords.some(k => k.keyword.toLowerCase().includes(search))
     const filteredChildren = filterTree(node.children, search)
 
-    if (nameMatch || keywordMatch || filteredChildren.length > 0) {
+    if (nameMatch || keywordMatch || emptyGroupMatch || filteredChildren.length > 0) {
       acc.push({
         ...node,
-        isMatch: nameMatch || keywordMatch,
+        isMatch: nameMatch || keywordMatch || emptyGroupMatch,
         children: filteredChildren,
       })
     }
     return acc
   }, [])
+}
+
+function expandMatches(nodes: RuleGroup[], search: string, expanded: Set<number>, ancestors: number[] = []) {
+  const emptyKeywords = ['空', '无名', 'empty', '空组', '无名组']
+  nodes.forEach(node => {
+    const nodeName = node.name || ''
+    const isEmptyNameGroup = !nodeName || nodeName.trim() === ''
+    const emptyGroupMatch = isEmptyNameGroup
+      ? emptyKeywords.some(keyword => keyword.includes(search) || search.includes(keyword))
+      : false
+    const nameMatch = nodeName.toLowerCase().includes(search)
+    const keywordMatch = node.keywords.some(k => k.keyword.toLowerCase().includes(search))
+    const nextAncestors = [...ancestors, node.id]
+
+    if (nameMatch || keywordMatch || emptyGroupMatch) {
+      expanded.add(node.id)
+      ancestors.forEach(id => expanded.add(id))
+    }
+
+    if (node.children.length > 0) {
+      expandMatches(node.children, search, expanded, nextAncestors)
+    }
+  })
 }
 
 // 循环依赖检测
@@ -188,41 +258,136 @@ function detectCycles(nodes: RuleGroup[]): { conflictNodes: RuleGroup[], conflic
   return { conflictNodes: conflicts, conflictRelations: relations, hasConflict: conflicts.length > 0 || relations.length > 0 }
 }
 
-// 加载规则树
+function detectLegacyConflicts(
+  nodes: RuleGroup[],
+  hierarchy: { parent_id: number; child_id: number }[]
+): { conflictNodes: RuleGroup[], conflictRelations: { parent_id: number; child_id: number; reason: string }[], hasConflict: boolean } {
+  const conflicts: RuleGroup[] = []
+  const relations: { parent_id: number; child_id: number; reason: string }[] = []
+  const nodeMap = new Map<number, RuleGroup>()
+
+  const buildMap = (list: RuleGroup[]) => {
+    list.forEach(node => {
+      nodeMap.set(node.id, node)
+      node.isConflict = false
+      node.conflictReason = undefined
+      buildMap(node.children)
+    })
+  }
+  buildMap(nodes)
+
+  const adjacency = new Map<number, number[]>()
+
+  const detectCycle = (startId: number, targetId: number, visited = new Set<number>()) => {
+    if (startId === targetId) return true
+    if (visited.has(startId)) return false
+    visited.add(startId)
+    const children = adjacency.get(startId) ?? []
+    for (const childId of children) {
+      if (detectCycle(childId, targetId, visited)) return true
+    }
+    return false
+  }
+
+  hierarchy.forEach(rel => {
+    if (!rel) return
+    const parentId = rel.parent_id
+    const childId = rel.child_id
+    const parent = nodeMap.get(parentId)
+    const child = nodeMap.get(childId)
+
+    if (!parent || !child) {
+      const reason = `节点不存在: ${!parent ? 'parent_id=' + parentId : ''} ${!child ? 'child_id=' + childId : ''}`
+      relations.push({ parent_id: parentId, child_id: childId, reason })
+      return
+    }
+
+    if (parentId === childId) {
+      relations.push({
+        parent_id: parentId,
+        child_id: childId,
+        reason: `自引用: 节点 ${parentId} 不能作为自己的父节点`,
+      })
+      child.isConflict = true
+      child.conflictReason = '自引用'
+      return
+    }
+
+    if (detectCycle(childId, parentId, new Set<number>())) {
+      relations.push({
+        parent_id: parentId,
+        child_id: childId,
+        reason: `循环依赖: ${childId} → ${parentId} 会形成环路`,
+      })
+      parent.isConflict = true
+      parent.conflictReason = `循环依赖（与节点 ${childId}）`
+      child.isConflict = true
+      child.conflictReason = `循环依赖（与节点 ${parentId}）`
+      return
+    }
+
+    const children = adjacency.get(parentId) ?? []
+    children.push(childId)
+    adjacency.set(parentId, children)
+  })
+
+  nodeMap.forEach((node) => {
+    if (node.isConflict) conflicts.push(node)
+  })
+
+  return { conflictNodes: conflicts, conflictRelations: relations, hasConflict: conflicts.length > 0 || relations.length > 0 }
+}
+
 async function loadRulesTree() {
   isLoading.value = true
   const result = await rulesApi.getRulesTree(globalStore.rulesVersion)
 
   if (result.notModified) {
+    const cached = globalStore.rulesTree || globalStore.loadRulesTreeCache()
+    if (cached) {
+      applyRulesTree(cached.groups, cached.hierarchy)
+      isLoading.value = false
+      return
+    }
+    const fresh = await rulesApi.getRulesTree()
+    if (fresh.success && fresh.data) {
+      globalStore.setRulesTree(fresh.data)
+      applyRulesTree(fresh.data.groups, fresh.data.hierarchy)
+    }
     isLoading.value = false
     return
   }
 
   if (result.success && result.data) {
     globalStore.setRulesTree(result.data)
-    groups.value = result.data.groups
-
-    // 检测循环依赖
-    const { conflictNodes: conflicts, conflictRelations: relations } = detectCycles(groups.value)
-    conflictNodes.value = conflicts
-    conflictRelations.value = relations
-
-    if ((conflicts.length > 0 || relations.length > 0) && !hasShownConflictWarning.value) {
-      hasShownConflictWarning.value = true
-      toast.error(`⚠️ 检测到 ${relations.length} 条数据冲突，请在规则树底部查看并修复`)
-    } else if (conflicts.length === 0 && relations.length === 0) {
-      hasShownConflictWarning.value = false
-    }
-
-    const hasSavedExpanded = sessionStorage.getItem('bqbq_tree_expanded') !== null
-    if (!hasSavedExpanded) {
-      expandedIds.value = getAllGroupIds(groups.value)
-      globalStore.setExpandedGroupIds([...expandedIds.value])
-    } else {
-      expandedIds.value = new Set(globalStore.expandedGroupIds)
-    }
+    applyRulesTree(result.data.groups, result.data.hierarchy)
   }
   isLoading.value = false
+}
+
+// 刷新规则树（旧版：提示+强制拉取最新数据）
+async function refreshRulesTree() {
+  isLoading.value = true
+  toast.info('正在刷新规则树...')
+  globalStore.updateRulesVersion(0)
+  globalStore.clearRulesTreeCache()
+  hasShownConflictWarning.value = false
+
+  try {
+    const result = await rulesApi.getRulesTree()
+    if (result.success && result.data) {
+      globalStore.setRulesTree(result.data)
+      applyRulesTree(result.data.groups, result.data.hierarchy)
+      toast.success('规则树已刷新')
+    } else {
+      toast.error('刷新失败，请重试')
+    }
+  } catch (error) {
+    console.error('刷新规则树失败:', error)
+    toast.error('刷新失败，请重试')
+  } finally {
+    isLoading.value = false
+  }
 }
 
 // 切换展开/折叠
@@ -245,7 +410,7 @@ function toggleBatchMode() {
   }
 }
 
-// 切换组选择
+// 切换组选中
 function toggleGroupSelection(groupId: number) {
   const newSet = new Set(selectedGroupIds.value)
   if (newSet.has(groupId)) {
@@ -256,6 +421,8 @@ function toggleGroupSelection(groupId: number) {
   selectedGroupIds.value = newSet
 }
 
+// 批量编辑模式
+// 切换组选择
 // 获取所有组ID
 function getAllGroupIds(nodes: RuleGroup[]): Set<number> {
   const ids = new Set<number>()
@@ -279,6 +446,7 @@ function toggleSelectAll() {
   }
 }
 
+// 全选/取消全选
 // 展开全部
 function expandAll() {
   expandedIds.value = getAllGroupIds(groups.value)
@@ -293,8 +461,13 @@ function collapseAll() {
 
 // 批量启用
 async function batchEnableGroups() {
-  if (selectedGroupIds.value.size === 0) return
+  if (selectedGroupIds.value.size === 0) {
+    toast.error('请先选择要操作的组')
+    return
+  }
   const selectedCount = selectedGroupIds.value.size
+
+  if (!confirm(`确定要启用选中的 ${selectedCount} 个组吗？`)) return
 
   const result = await rulesApi.batchGroups(
     Array.from(selectedGroupIds.value),
@@ -307,15 +480,21 @@ async function batchEnableGroups() {
     globalStore.updateRulesVersion(result.data.new_version)
     await loadRulesTree()
     selectedGroupIds.value.clear()
-    toast.success(`已启用 ${selectedCount} 个规则组`)
+    const affected = result.data.affected_count ?? selectedCount
+    toast.success(`已启用 ${affected} 个组`)
     emit('update')
   }
 }
 
 // 批量禁用
 async function batchDisableGroups() {
-  if (selectedGroupIds.value.size === 0) return
+  if (selectedGroupIds.value.size === 0) {
+    toast.error('请先选择要操作的组')
+    return
+  }
   const selectedCount = selectedGroupIds.value.size
+
+  if (!confirm(`确定要禁用选中的 ${selectedCount} 个组吗？`)) return
 
   const result = await rulesApi.batchGroups(
     Array.from(selectedGroupIds.value),
@@ -328,19 +507,21 @@ async function batchDisableGroups() {
     globalStore.updateRulesVersion(result.data.new_version)
     await loadRulesTree()
     selectedGroupIds.value.clear()
-    toast.success(`已禁用 ${selectedCount} 个规则组`)
+    const affected = result.data.affected_count ?? selectedCount
+    toast.success(`已禁用 ${affected} 个组`)
     emit('update')
   }
 }
 
 // 批量删除
 async function batchDeleteGroups() {
-  if (selectedGroupIds.value.size === 0) return
-  const selectedCount = selectedGroupIds.value.size
-
-  if (!confirm(`确定要删除选中的 ${selectedGroupIds.value.size} 个规则组吗？\n这将同时删除所有子组和关键词。`)) {
+  if (selectedGroupIds.value.size === 0) {
+    toast.error('请先选择要删除的组')
     return
   }
+  const selectedCount = selectedGroupIds.value.size
+
+  if (!confirm(`确定要彻底删除选中的 ${selectedCount} 个组吗？\n\n⚠️ 此操作将递归删除所有子组和关键词，无法撤销！`)) return
 
   const result = await rulesApi.batchGroups(
     Array.from(selectedGroupIds.value),
@@ -353,7 +534,8 @@ async function batchDeleteGroups() {
     globalStore.updateRulesVersion(result.data.new_version)
     await loadRulesTree()
     selectedGroupIds.value.clear()
-    toast.success(`已删除 ${selectedCount} 个规则组`)
+    const affected = result.data.affected_count ?? selectedCount
+    toast.success(`已删除 ${affected} 个组`)
     emit('update')
   }
 }
@@ -370,6 +552,9 @@ async function toggleGroupEnabled(group: RuleGroup) {
   if (result.success && result.data) {
     globalStore.updateRulesVersion(result.data.new_version)
     await loadRulesTree()
+    const displayName = group.name || '[无名组]'
+    const actionText = group.enabled ? '禁用' : '启用'
+    toast.success(`组「${displayName}」已${actionText}`)
     emit('update')
   }
 }
@@ -402,6 +587,7 @@ function startAddKeyword(groupId: number) {
 async function confirmAddGroup() {
   const name = newGroupName.value.trim()
   if (!name) {
+    toast.error('组名不能为空！')
     cancelAdd()
     return
   }
@@ -410,15 +596,37 @@ async function confirmAddGroup() {
 
   const result = await rulesApi.createGroup(
     name,
-    parentId,
+    null,
     globalStore.clientId,
     globalStore.rulesVersion
   )
 
   if (result.success && result.data) {
     globalStore.updateRulesVersion(result.data.new_version)
-    await loadRulesTree()
-    emit('update')
+    if (parentId !== null) {
+      const hierarchyResult = await rulesApi.addHierarchy(
+        result.data.id,
+        parentId,
+        globalStore.clientId,
+        globalStore.rulesVersion
+      )
+      if (hierarchyResult.success && hierarchyResult.data) {
+        globalStore.updateRulesVersion(hierarchyResult.data.new_version)
+        await loadRulesTree()
+        toast.success(`子组「${name}」已创建`)
+        emit('update')
+      } else {
+        await loadRulesTree()
+        toast.error('建立关系失败')
+        emit('update')
+      }
+    } else {
+      await loadRulesTree()
+      toast.success(`已创建组: ${name}`)
+      emit('update')
+    }
+  } else {
+    toast.error('创建组失败')
   }
 
   cancelAdd()
@@ -459,9 +667,19 @@ function cancelAdd() {
 
 // 删除组
 async function deleteGroup(group: RuleGroup) {
-  if (!confirm(`确定要删除规则组 "${group.name}" 吗？\n这将同时删除所有子组和关键词。`)) {
+  const target = findGroupById(groups.value, group.id)
+  if (!target) {
+    toast.error('组不存在')
     return
   }
+
+  const descendantCount = countDescendants(target)
+  const displayName = target.name || '[无名组]'
+  const confirmMsg = descendantCount > 0
+    ? `确定要彻底删除组「${displayName}」吗？\n\n这将同时删除其 ${descendantCount} 个子组及所有关键词。\n此操作无法撤销！`
+    : `确定要彻底删除组「${displayName}」吗？\n\n此操作无法撤销！`
+
+  if (!confirm(confirmMsg)) return
 
   const result = await rulesApi.deleteGroup(
     group.id,
@@ -472,6 +690,8 @@ async function deleteGroup(group: RuleGroup) {
   if (result.success && result.data) {
     globalStore.updateRulesVersion(result.data.new_version)
     await loadRulesTree()
+    const deletedCount = result.data.deleted_count ?? 1
+    toast.success(`已删除 ${deletedCount} 个组`)
     emit('update')
   }
 }
@@ -492,6 +712,7 @@ async function removeConflictHierarchy(parentId: number, childId: number) {
   if (result.success && result.data) {
     globalStore.updateRulesVersion(result.data.new_version)
     await loadRulesTree()
+    toast.success('冲突关系已删除')
     emit('update')
   }
 }
@@ -504,18 +725,7 @@ async function moveConflictNodeToRoot(nodeId: number) {
 
   const relationsToRemove = conflictRelations.value.filter(rel => rel.child_id === nodeId)
   if (relationsToRemove.length === 0) {
-    const result = await rulesApi.moveGroup(
-      nodeId,
-      null,
-      globalStore.clientId,
-      globalStore.rulesVersion
-    )
-
-    if (result.success && result.data) {
-      globalStore.updateRulesVersion(result.data.new_version)
-      await loadRulesTree()
-      emit('update')
-    }
+    toast.info('未找到需要删除的父关系')
     return
   }
 
@@ -536,14 +746,38 @@ async function moveConflictNodeToRoot(nodeId: number) {
     globalStore.updateRulesVersion(latestVersion)
   }
   await loadRulesTree()
+  toast.success(`已删除 ${relationsToRemove.length} 条父关系，节点已移到根目录`)
   emit('update')
+}
+
+function findGroupById(nodes: RuleGroup[], id: number): RuleGroup | null {
+  for (const node of nodes) {
+    if (node.id === id) return node
+    const found = findGroupById(node.children, id)
+    if (found) return found
+  }
+  return null
+}
+
+function countDescendants(node: RuleGroup): number {
+  let count = 0
+  if (node.children && node.children.length > 0) {
+    count = node.children.length
+    node.children.forEach(child => {
+      count += countDescendants(child)
+    })
+  }
+  return count
 }
 
 // 重命名组
 async function handleRenameGroup(groupId: number, name: string) {
+  const target = findGroupById(groups.value, groupId)
+  const enabled = target ? target.enabled : true
   const result = await rulesApi.renameGroup(
     groupId,
     name,
+    enabled,
     globalStore.clientId,
     globalStore.rulesVersion
   )
@@ -558,34 +792,28 @@ async function handleRenameGroup(groupId: number, name: string) {
 }
 
 // 删除关键词
-async function deleteKeyword(keywordId: number) {
+async function deleteKeyword(keyword: RuleKeyword) {
+  if (!confirm(`确定要从该组移除关键词 "${keyword.keyword}" 吗?`)) {
+    return
+  }
   const result = await rulesApi.deleteKeyword(
-    keywordId,
+    keyword.group_id,
+    keyword.keyword,
     globalStore.clientId,
     globalStore.rulesVersion
   )
 
   if (result.success && result.data) {
-    globalStore.updateRulesVersion(result.data.new_version)
+    globalStore.updateRulesVersion(result.data.version_id)
     await loadRulesTree()
+    toast.success(`关键词 "${keyword.keyword}" 已移除。`)
     emit('update')
   }
 }
 
-// 切换关键词启用状态
-async function toggleKeywordEnabled(keyword: RuleKeyword) {
-  const result = await rulesApi.toggleKeyword(
-    keyword.id,
-    !keyword.enabled,
-    globalStore.clientId,
-    globalStore.rulesVersion
-  )
-
-  if (result.success && result.data) {
-    globalStore.updateRulesVersion(result.data.new_version)
-    await loadRulesTree()
-    emit('update')
-  }
+// 切换关键词启用状态（旧项目不支持）
+async function toggleKeywordEnabled() {
+  return
 }
 
 // 拖拽事件处理
@@ -598,108 +826,168 @@ function handleDragEnd() {
   clearDragState()
 }
 
-async function handleDropOnGroup(targetGroupId: number) {
-  if (!draggingId.value || draggingId.value === targetGroupId) return
+function buildParentMap(nodes: RuleGroup[]) {
+  const parentMap = new Map<number, number[]>()
+  const visited = new Set<number>()
 
-  // 批量拖拽支持
-  let dragIds = [draggingId.value]
+  const walk = (list: RuleGroup[], parent: RuleGroup | null) => {
+    list.forEach(node => {
+      if (parent) {
+        const parents = parentMap.get(node.id) ?? []
+        parents.push(parent.id)
+        parentMap.set(node.id, parents)
+      }
+      if (visited.has(node.id)) return
+      visited.add(node.id)
+      if (node.children.length > 0) {
+        walk(node.children, node)
+      }
+    })
+  }
+
+  walk(nodes, null)
+  return parentMap
+}
+
+function wouldCreateCycle(parentId: number | null, childId: number) {
+  if (!parentId || parentId === 0) return false
+  if (parentId === childId) return true
+
+  const parentMap = buildParentMap(groups.value)
+  const visited = new Set<number>()
+  const stack = [parentId]
+
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    if (current === childId) return true
+    if (visited.has(current)) continue
+    visited.add(current)
+    const parents = parentMap.get(current) ?? []
+    parents.forEach(pid => stack.push(pid))
+  }
+  return false
+}
+
+function getDragIds(): number[] {
+  if (!draggingId.value) return []
   if (batchEditMode.value && selectedGroupIds.value.size > 0 && selectedGroupIds.value.has(draggingId.value)) {
-    dragIds = Array.from(selectedGroupIds.value)
+    return Array.from(selectedGroupIds.value)
+  }
+  return [draggingId.value]
+}
+
+async function handleHierarchyMove(targetParentId: number | null, dragIds: number[]) {
+  if (isHandlingHierarchyChange.value) return
+  if (dragIds.length === 0) return
+
+  const normalizedParentId = targetParentId ?? 0
+  let ids = Array.from(new Set(dragIds)).filter(id => id)
+  if (normalizedParentId !== 0) {
+    ids = ids.filter(id => id !== normalizedParentId)
+  }
+  if (ids.length === 0) {
+    if (normalizedParentId !== 0 && dragIds.includes(normalizedParentId)) {
+      toast.error('无法将组拖拽到自身。')
+    }
+    clearDragState()
+    return
   }
 
-  if (dragIds.length > 1) {
-    // 批量移动
+  const cycleErrors = ids.filter(id => wouldCreateCycle(normalizedParentId, id))
+  if (cycleErrors.length > 0) {
+    toast.error(`❌ 无法移动：${cycleErrors.length} 个组会形成循环依赖！`)
+    console.error('[handleBatchHierarchyChange] 循环检测失败的节点:', cycleErrors)
+    clearDragState()
+    return
+  }
+
+  isHandlingHierarchyChange.value = true
+
+  let previousSelected: Set<number> | null = null
+  if (batchEditMode.value && selectedGroupIds.value.size > 0) {
+    previousSelected = new Set(selectedGroupIds.value)
+    selectedGroupIds.value.clear()
+  }
+
+  toast.info(`正在移动 ${ids.length} 个组...`)
+
+  try {
     const result = await rulesApi.batchMoveHierarchy(
-      dragIds,
-      targetGroupId,
+      ids,
+      normalizedParentId === 0 ? null : normalizedParentId,
       globalStore.clientId,
       globalStore.rulesVersion
     )
+
+    if (result.data) {
+      const moved = result.data.moved ?? ids.length
+      const errors = Array.isArray(result.data.errors) ? result.data.errors : []
+
+      if (result.success) {
+        if (errors.length === 0) {
+          toast.success(`已移动 ${moved} 个组`)
+        } else {
+          toast.warning(`移动完成：${moved} 成功，${errors.length} 失败`)
+          console.log('[handleBatchHierarchyChange] 部分失败:', errors)
+        }
+      } else if (errors.length > 0) {
+        const allCycle = errors.every((err: any) => err?.error === 'Would create cycle')
+        toast.error(allCycle ? '❌ 移动失败：会形成循环依赖' : `❌ 移动失败：${errors.length} 个错误`)
+        console.error('[handleBatchHierarchyChange] 全部失败:', errors)
+      }
+    }
 
     if (result.success && result.data) {
       globalStore.updateRulesVersion(result.data.new_version)
       await loadRulesTree()
       emit('update')
+    } else if (!result.success && previousSelected) {
+      selectedGroupIds.value = new Set(previousSelected)
     }
-  } else {
-    // 单个移动
-    const result = await rulesApi.moveGroup(
-      draggingId.value,
-      targetGroupId,
-      globalStore.clientId,
-      globalStore.rulesVersion
-    )
-
-    if (result.success && result.data) {
-      globalStore.updateRulesVersion(result.data.new_version)
-      await loadRulesTree()
-      emit('update')
+  } catch (error) {
+    console.error('[handleBatchHierarchyChange] 请求失败:', error)
+    toast.error('网络错误，请重试')
+    if (previousSelected) {
+      selectedGroupIds.value = new Set(previousSelected)
     }
+  } finally {
+    isHandlingHierarchyChange.value = false
+    clearDragState()
   }
+}
 
-  clearDragState()
+async function handleDropOnGroup(targetGroupId: number) {
+  if (!draggingId.value) return
+  const dragIds = getDragIds()
+  await handleHierarchyMove(targetGroupId, dragIds)
 }
 
 async function handleDropOnRoot(e: DragEvent) {
   e.preventDefault()
   e.stopPropagation()
   if (!draggingId.value) return
-
-  // 批量拖拽支持
-  let dragIds = [draggingId.value]
-  if (batchEditMode.value && selectedGroupIds.value.size > 0 && selectedGroupIds.value.has(draggingId.value)) {
-    dragIds = Array.from(selectedGroupIds.value)
-  }
-
-  if (dragIds.length > 1) {
-    // 批量移动到根
-    const result = await rulesApi.batchMoveHierarchy(
-      dragIds,
-      null,
-      globalStore.clientId,
-      globalStore.rulesVersion
-    )
-
-    if (result.success && result.data) {
-      globalStore.updateRulesVersion(result.data.new_version)
-      await loadRulesTree()
-      emit('update')
-    }
-  } else {
-    // 单个移动到根
-    const result = await rulesApi.moveGroup(
-      draggingId.value,
-      null,
-      globalStore.clientId,
-      globalStore.rulesVersion
-    )
-
-    if (result.success && result.data) {
-      globalStore.updateRulesVersion(result.data.new_version)
-      await loadRulesTree()
-      emit('update')
-    }
-  }
-
-  clearDragState()
+  const dragIds = getDragIds()
+  await handleHierarchyMove(null, dragIds)
 }
 
 function handleRootDragOver(e: DragEvent) {
   if (!draggingId.value) return
   e.preventDefault()
   e.stopPropagation()
-  rootDropZoneActive.value = true
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'move'
+  }
+  applyDropHighlight({ type: 'root' })
 }
 
 function handleRootDragLeave(e: DragEvent) {
   e.stopPropagation()
-  rootDropZoneActive.value = false
+  applyDropHighlight({ type: 'none' })
 }
 
 function clearDragState() {
   draggingId.value = null
-  rootDropZoneActive.value = false
-  dragOverGapKey.value = null
+  applyDropHighlight({ type: 'none' })
   document.body.classList.remove('is-dragging')
 }
 
@@ -707,12 +995,15 @@ function handleGapDragOver(e: DragEvent, gapKey: string) {
   if (!draggingId.value) return
   e.preventDefault()
   e.stopPropagation()
-  dragOverGapKey.value = gapKey
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'move'
+  }
+  applyDropHighlight({ type: 'gap', parentId: 0, gapKey })
 }
 
 function handleGapDragLeave(e: DragEvent) {
   e.stopPropagation()
-  dragOverGapKey.value = null
+  applyDropHighlight({ type: 'none' })
 }
 
 async function handleGapDrop(e: DragEvent, parentId: number) {
@@ -722,53 +1013,248 @@ async function handleGapDrop(e: DragEvent, parentId: number) {
   if (!draggingId.value) return
 
   const targetParentId = parentId === 0 ? null : parentId
-  let dragIds = [draggingId.value]
+  const dragIds = getDragIds()
+  await handleHierarchyMove(targetParentId, dragIds)
+}
 
-  if (batchEditMode.value && selectedGroupIds.value.size > 0 && selectedGroupIds.value.has(draggingId.value)) {
-    dragIds = Array.from(selectedGroupIds.value)
+type TouchDropTarget =
+  | { type: 'root' }
+  | { type: 'gap'; parentId: number; gapKey: string }
+  | { type: 'group'; groupId: number }
+  | { type: 'none' }
+
+const TOUCH_LONG_PRESS_MS = 220
+const TOUCH_MOVE_THRESHOLD = 6
+
+function clearTouchDragTimer() {
+  if (touchDragTimer.value) {
+    window.clearTimeout(touchDragTimer.value)
+    touchDragTimer.value = null
+  }
+}
+
+function resetTouchDragState(clearDrag = false) {
+  clearTouchDragTimer()
+  touchDragPointerId.value = null
+  touchDragActive.value = false
+  touchDragMoved.value = false
+  touchDragSourceEl.value = null
+  touchDropTargetId.value = null
+  if (clearDrag) {
+    applyDropHighlight({ type: 'none' })
+  }
+}
+
+function shouldIgnoreTouchTarget(target: HTMLElement) {
+  if (target.closest('button, input, textarea, select, [contenteditable="true"]')) return true
+  if (target.closest('.rule-action-btn, .batch-checkbox-wrapper, .batch-checkbox, .group-editor-wrapper, .keyword-add-input-wrapper')) {
+    return true
+  }
+  return false
+}
+
+function resolveTouchDropTarget(x: number, y: number): TouchDropTarget {
+  const el = document.elementFromPoint(x, y) as HTMLElement | null
+  if (!el) return { type: 'none' }
+
+  const rootEl = el.closest('.root-drop-zone') as HTMLElement | null
+  if (rootEl) {
+    return { type: 'root' }
   }
 
-  if (targetParentId !== null) {
-    dragIds = dragIds.filter(id => id !== targetParentId)
+  const gapEl = el.closest('.drop-gap') as HTMLElement | null
+  if (gapEl && gapEl.dataset.gapKey) {
+    const parentId = Number(gapEl.dataset.gapParent ?? '')
+    if (!Number.isNaN(parentId)) {
+      return { type: 'gap', parentId, gapKey: gapEl.dataset.gapKey }
+    }
   }
 
-  if (dragIds.length === 0) {
-    clearDragState()
+  const groupEl = el.closest('.group-node') as HTMLElement | null
+  if (groupEl) {
+    const groupId = Number(groupEl.dataset.id ?? '')
+    if (!Number.isNaN(groupId)) {
+      return { type: 'group', groupId }
+    }
+  }
+
+  return { type: 'none' }
+}
+
+function applyDropHighlight(target: TouchDropTarget) {
+  if (target.type === 'root') {
+    rootDropZoneActive.value = true
+    dragOverGapKey.value = null
+    touchDropTargetId.value = null
+    return
+  }
+  if (target.type === 'gap') {
+    rootDropZoneActive.value = false
+    dragOverGapKey.value = target.gapKey
+    touchDropTargetId.value = null
+    return
+  }
+  if (target.type === 'group') {
+    rootDropZoneActive.value = false
+    dragOverGapKey.value = null
+    touchDropTargetId.value = target.groupId
+    return
+  }
+  rootDropZoneActive.value = false
+  dragOverGapKey.value = null
+  touchDropTargetId.value = null
+}
+
+function startTouchDrag(groupId: number, pointerId: number, sourceEl: HTMLElement) {
+  touchDragActive.value = true
+  touchDragPointerId.value = pointerId
+  touchDragMoved.value = false
+  draggingId.value = groupId
+  document.body.classList.add('is-dragging')
+  try {
+    sourceEl.setPointerCapture(pointerId)
+  } catch {
+    // ignore pointer capture failures
+  }
+}
+
+function attachTouchListeners() {
+  if (touchListenersAttached) return
+  touchListenersAttached = true
+  document.addEventListener('pointermove', handleTouchPointerMove, { passive: false })
+  document.addEventListener('pointerup', handleTouchPointerUp, { passive: false })
+  document.addEventListener('pointercancel', handleTouchPointerCancel, { passive: false })
+}
+
+function detachTouchListeners() {
+  if (!touchListenersAttached) return
+  touchListenersAttached = false
+  document.removeEventListener('pointermove', handleTouchPointerMove)
+  document.removeEventListener('pointerup', handleTouchPointerUp)
+  document.removeEventListener('pointercancel', handleTouchPointerCancel)
+}
+
+function handleTouchPointerDown(e: PointerEvent) {
+  if (e.pointerType !== 'touch') return
+  if (draggingId.value) return
+  if (touchDragPointerId.value !== null) return
+  const target = e.target as HTMLElement | null
+  if (!target) return
+  if (shouldIgnoreTouchTarget(target)) return
+
+  const groupEl = target.closest('.group-node') as HTMLElement | null
+  if (!groupEl) return
+  const groupId = Number(groupEl.dataset.id ?? '')
+  if (!groupId) return
+
+  touchDragSourceEl.value = groupEl
+  touchDragPointerId.value = e.pointerId
+  touchDragStartX.value = e.clientX
+  touchDragStartY.value = e.clientY
+
+  touchDragTimer.value = window.setTimeout(() => {
+    startTouchDrag(groupId, e.pointerId, groupEl)
+    applyDropHighlight(resolveTouchDropTarget(e.clientX, e.clientY))
+  }, TOUCH_LONG_PRESS_MS)
+
+  attachTouchListeners()
+}
+
+function handleTouchPointerMove(e: PointerEvent) {
+  if (e.pointerType !== 'touch') return
+  if (touchDragPointerId.value !== null && e.pointerId !== touchDragPointerId.value) return
+
+  const dx = e.clientX - touchDragStartX.value
+  const dy = e.clientY - touchDragStartY.value
+  const moved = Math.hypot(dx, dy)
+
+  if (!touchDragActive.value) {
+    if (moved > TOUCH_MOVE_THRESHOLD) {
+      resetTouchDragState()
+      detachTouchListeners()
+    }
     return
   }
 
-  if (dragIds.length > 1) {
-    const result = await rulesApi.batchMoveHierarchy(
-      dragIds,
-      targetParentId,
-      globalStore.clientId,
-      globalStore.rulesVersion
-    )
+  e.preventDefault()
+  if (moved > 1) {
+    touchDragMoved.value = true
+  }
+  applyDropHighlight(resolveTouchDropTarget(e.clientX, e.clientY))
+}
 
-    if (result.success && result.data) {
-      globalStore.updateRulesVersion(result.data.new_version)
-      await loadRulesTree()
-      emit('update')
-    }
-  } else {
-    const result = await rulesApi.moveGroup(
-      dragIds[0],
-      targetParentId,
-      globalStore.clientId,
-      globalStore.rulesVersion
-    )
+async function handleTouchPointerUp(e: PointerEvent) {
+  if (e.pointerType !== 'touch') return
+  if (touchDragPointerId.value !== null && e.pointerId !== touchDragPointerId.value) return
 
-    if (result.success && result.data) {
-      globalStore.updateRulesVersion(result.data.new_version)
-      await loadRulesTree()
-      emit('update')
-    }
+  if (!touchDragActive.value) {
+    resetTouchDragState()
+    detachTouchListeners()
+    return
   }
 
+  e.preventDefault()
+  try {
+    touchDragSourceEl.value?.releasePointerCapture(e.pointerId)
+  } catch {
+    // ignore pointer capture failures
+  }
+
+  const target = resolveTouchDropTarget(e.clientX, e.clientY)
+  const dragIds = getDragIds()
+  const currentDragId = draggingId.value
+
+  if (!touchDragMoved.value && target.type === 'group' && currentDragId && target.groupId === currentDragId) {
+    resetTouchDragState(true)
+    clearDragState()
+    touchDragJustEnded.value = true
+    window.setTimeout(() => {
+      touchDragJustEnded.value = false
+    }, 300)
+    detachTouchListeners()
+    return
+  }
+
+  if (target.type === 'root') {
+    await handleHierarchyMove(null, dragIds)
+  } else if (target.type === 'gap') {
+    const parentId = target.parentId === 0 ? null : target.parentId
+    await handleHierarchyMove(parentId, dragIds)
+  } else if (target.type === 'group') {
+    await handleHierarchyMove(target.groupId, dragIds)
+  }
+
+  resetTouchDragState(true)
   clearDragState()
+  touchDragJustEnded.value = true
+  window.setTimeout(() => {
+    touchDragJustEnded.value = false
+  }, 300)
+  detachTouchListeners()
+}
+
+function handleTouchPointerCancel(e: PointerEvent) {
+  if (e.pointerType !== 'touch') return
+  if (touchDragPointerId.value !== null && e.pointerId !== touchDragPointerId.value) return
+  try {
+    touchDragSourceEl.value?.releasePointerCapture(e.pointerId)
+  } catch {
+    // ignore pointer capture failures
+  }
+  resetTouchDragState(true)
+  clearDragState()
+  detachTouchListeners()
+}
+
+function handleTouchClickCapture(e: MouseEvent) {
+  if (!touchDragJustEnded.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  touchDragJustEnded.value = false
 }
 
 function initRulesTreeScrollSync() {
+  const wrapper = document.getElementById('rules-tree-scroll-wrapper')
   const content = scrollContentRef.value
   const container = treeContainerRef.value
   const vScrollbar = vScrollbarRef.value
@@ -930,11 +1416,19 @@ function close() {
 
 function clearTreeSearch() {
   searchText.value = ''
+  searchInputRef.value?.focus()
 }
 
 // 监听搜索文本变化，滚动到第一个匹配项
 watch(searchText, async (newVal) => {
-  if (!newVal.trim()) return
+  const trimmed = newVal.trim()
+  if (!trimmed) return
+
+  const search = trimmed.toLowerCase()
+  const newSet = new Set(expandedIds.value)
+  expandMatches(groups.value, search, newSet)
+  expandedIds.value = newSet
+  globalStore.setExpandedGroupIds([...expandedIds.value])
 
   // 等待 DOM 更新
   await nextTick()
@@ -961,7 +1455,7 @@ watch(filteredGroups, async () => {
 })
 
 // 初始化
-onMounted(() => {
+onMounted(async () => {
   if (props.visible) {
     loadRulesTree()
   }
@@ -969,10 +1463,22 @@ onMounted(() => {
     expandedIds.value = new Set(globalStore.expandedGroupIds)
   }
   initRulesTreeScrollSync()
+  await nextTick()
+  const container = treeContainerRef.value
+  if (container) {
+    container.addEventListener('pointerdown', handleTouchPointerDown, { passive: true })
+    container.addEventListener('click', handleTouchClickCapture, true)
+  }
 })
 
 onBeforeUnmount(() => {
   cleanupScrollSync?.()
+  const container = treeContainerRef.value
+  if (container) {
+    container.removeEventListener('pointerdown', handleTouchPointerDown)
+    container.removeEventListener('click', handleTouchClickCapture, true)
+  }
+  detachTouchListeners()
   document.body.classList.remove('is-dragging')
 })
 
@@ -997,10 +1503,9 @@ onBeforeUnmount(() => {
               id="refresh-rules-btn"
               class="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
               title="刷新规则树（强制从服务器重新加载）"
-              :class="{ 'animate-spin': isLoading }"
-              @click="loadRulesTree"
+              @click="refreshRulesTree"
             >
-              <RefreshCw class="w-4 h-4" />
+              <RefreshCw :class="['w-4 h-4', isLoading ? 'animate-spin' : '']" />
             </button>
           </div>
         </div>
@@ -1008,6 +1513,7 @@ onBeforeUnmount(() => {
         <div id="rules-search-container" class="pb-3 relative shrink-0">
           <input
             id="rules-tree-search"
+            ref="searchInputRef"
             v-model="searchText"
             list="tree-suggestions"
             type="text"
@@ -1030,7 +1536,17 @@ onBeforeUnmount(() => {
 
         <div id="batch-edit-toolbar" class="p-2 bg-blue-50 border border-blue-200 rounded-lg flex flex-col gap-1.5 shrink-0">
           <div class="flex gap-1.5 items-center">
-            <button id="batch-mode-btn" class="px-2 py-1 text-xs bg-white text-blue-600 border border-blue-300 rounded hover:bg-blue-100 transition" title="进入/退出批量编辑模式" @click="toggleBatchMode">批量</button>
+            <button
+              id="batch-mode-btn"
+              :class="[
+                'px-2 py-1 text-xs rounded transition border hover:bg-blue-100',
+                batchEditMode
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : 'bg-white text-blue-600 border-blue-300'
+              ]"
+              title="进入/退出批量编辑模式"
+              @click="toggleBatchMode"
+            >批量</button>
             <button id="expand-all-btn" class="px-2 py-1 text-xs bg-white text-slate-600 border border-slate-300 rounded hover:bg-slate-100 transition" title="展开全部" @click="expandAll">展开</button>
             <button id="collapse-all-btn" class="px-2 py-1 text-xs bg-white text-slate-600 border border-slate-300 rounded hover:bg-slate-100 transition" title="折叠全部" @click="collapseAll">折叠</button>
             <button id="add-root-group-btn" class="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition" title="添加新组" @click="startAddRootGroup">新组</button>
@@ -1043,7 +1559,10 @@ onBeforeUnmount(() => {
             <button id="batch-enable-btn" class="px-2 py-1 text-xs bg-emerald-500 text-white rounded hover:bg-emerald-600 transition" title="批量启用" @click="batchEnableGroups">启用</button>
             <button id="batch-disable-btn" class="px-2 py-1 text-xs bg-yellow-500 text-white rounded hover:bg-yellow-600 transition" title="批量禁用" @click="batchDisableGroups">禁用</button>
             <button id="batch-delete-btn" class="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600 transition" title="批量删除" @click="batchDeleteGroups">删除</button>
-            <span id="batch-selected-info" class="text-xs text-blue-700 font-medium">已选(<span id="batch-selected-count" class="font-bold">{{ selectedGroupIds.size }}</span>)</span>
+            <span
+              id="batch-selected-info"
+              :class="['text-xs text-blue-700 font-medium', batchEditMode ? '' : 'hidden']"
+            >已选(<span id="batch-selected-count" class="font-bold">{{ selectedGroupIds.size }}</span>)</span>
           </div>
         </div>
 
@@ -1057,6 +1576,7 @@ onBeforeUnmount(() => {
               <div
                 v-if="filteredGroups.length > 0"
                 :class="['root-drop-zone', rootDropZoneActive ? 'drag-over' : '', draggingId ? '' : 'hidden']"
+                data-drop-root="1"
                 @dragover="handleRootDragOver"
                 @dragleave="handleRootDragLeave"
                 @drop="handleDropOnRoot"
@@ -1081,13 +1601,19 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <div v-if="filteredGroups.length === 0 && !isLoading" class="text-sm text-slate-400 text-center mt-4">
+              <p v-if="isLoading && filteredGroups.length === 0" class="text-sm text-slate-400">
+                加载中...
+              </p>
+
+              <p v-if="filteredGroups.length === 0 && !isLoading" class="text-sm text-slate-400 text-center mt-4">
                 暂无规则数据。
-              </div>
+              </p>
 
               <template v-for="group in filteredGroups" :key="group.id">
                 <div
                   :class="['drop-gap', dragOverGapKey === `gap-0-${group.id}` ? 'drag-over' : '']"
+                  :data-gap-key="`gap-0-${group.id}`"
+                  data-gap-parent="0"
                   @dragover="handleGapDragOver($event, `gap-0-${group.id}`)"
                   @dragleave="handleGapDragLeave"
                   @drop="handleGapDrop($event, 0)"
@@ -1104,6 +1630,7 @@ onBeforeUnmount(() => {
                   :selected-group-ids="selectedGroupIds"
                   :search-text="searchText"
                   :drag-over-gap-key="dragOverGapKey"
+                  :touch-drop-target-id="touchDropTargetId"
                   @toggle-expand="toggleExpand"
                   @start-add-group="startAddGroup"
                   @start-add-keyword="startAddKeyword"
@@ -1129,6 +1656,8 @@ onBeforeUnmount(() => {
               <div
                 v-if="filteredGroups.length > 0"
                 :class="['drop-gap', dragOverGapKey === 'gap-0-end' ? 'drag-over' : '']"
+                data-gap-key="gap-0-end"
+                data-gap-parent="0"
                 @dragover="handleGapDragOver($event, 'gap-0-end')"
                 @dragleave="handleGapDragLeave"
                 @drop="handleGapDrop($event, 0)"

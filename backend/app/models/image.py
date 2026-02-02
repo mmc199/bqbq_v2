@@ -48,18 +48,26 @@ class SearchRequest(BaseModel):
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
     # 新增参数 - 与旧项目一致
-    min_tags: int | None = Field(default=None, ge=0, description="最小标签数量")
-    max_tags: int | None = Field(default=None, ge=0, description="最大标签数量")
+    min_tags: int = Field(default=0, ge=0, description="最小标签数量")
+    max_tags: int = Field(default=-1, ge=-1, description="最大标签数量(-1 表示无限制)")
     sort_by: str = Field(default="time_desc", description="排序方式: time_desc, time_asc, tags_desc, tags_asc, size_desc, size_asc, resolution_desc, resolution_asc")
     extensions: list[str] = Field(default_factory=list, description="文件扩展名过滤")
     exclude_extensions: list[str] = Field(default_factory=list, description="排除的文件扩展名")
     expand: bool = Field(default=True, description="是否启用关键词膨胀")
 
 
+class SearchResultItem(BaseModel):
+    """旧项目搜索结果条目"""
+    md5: str
+    filename: str
+    tags: list[str]
+    w: int
+    h: int
+    size: int
+    is_trash: bool
+
+
 class SearchResponse(BaseModel):
-    """搜索响应"""
-    images: list[ImageResponse]
+    """搜索响应（旧项目格式）"""
     total: int
-    page: int
-    page_size: int
-    expanded_tags: list[str] = Field(default_factory=list)
+    results: list[SearchResultItem]

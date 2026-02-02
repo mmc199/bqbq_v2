@@ -4,7 +4,7 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from ..database import get_connection
-from ..models.image import SearchRequest, SearchResponse, ImageResponse
+from ..models.image import SearchRequest, SearchResponse
 
 router = APIRouter()
 
@@ -91,27 +91,28 @@ async def search_images_simple(request: SearchRequest) -> SearchResponse:
         # 构建查询
         where_clauses = ["1=1"]
         params = []
+        tags_expr = "NULLIF(f.tags, '')"
 
         # 包含标签（OR 关系）
         if expanded_include:
             or_conditions = []
             for tag in expanded_include:
-                or_conditions.append("i.tags LIKE ?")
+                or_conditions.append(f"{tags_expr} LIKE ?")
                 params.append(f"%{tag}%")
             where_clauses.append(f"({' OR '.join(or_conditions)})")
 
         # 排除标签
         for exclude_tag in request.exclude_tags:
-            where_clauses.append("i.tags NOT LIKE ?")
+            where_clauses.append(f"{tags_expr} NOT LIKE ?")
             params.append(f"%{exclude_tag}%")
 
         # 标签数量过滤
         tag_count_expr = """
             CASE
-                WHEN i.tags IS NULL OR i.tags = '' THEN 0
-                ELSE LENGTH(i.tags) - LENGTH(REPLACE(i.tags, ' ', '')) + 1
+                WHEN {tags_expr} IS NULL OR {tags_expr} = '' THEN 0
+                ELSE LENGTH({tags_expr}) - LENGTH(REPLACE({tags_expr}, ' ', '')) + 1
             END
-        """
+        """.format(tags_expr=tags_expr)
 
         if request.min_tags is not None and request.min_tags > 0:
             where_clauses.append(f"({tag_count_expr}) >= ?")
@@ -138,7 +139,12 @@ async def search_images_simple(request: SearchRequest) -> SearchResponse:
         where_sql = " AND ".join(where_clauses)
 
         # 获取总数
-        count_query = f"SELECT COUNT(*) as total FROM images i WHERE {where_sql}"
+        count_query = f"""
+            SELECT COUNT(*) as total
+            FROM images i
+            LEFT JOIN images_fts f ON i.id = f.rowid
+            WHERE {where_sql}
+        """
         cursor.execute(count_query, params)
         total = cursor.fetchone()['total']
 
@@ -157,21 +163,34 @@ async def search_images_simple(request: SearchRequest) -> SearchResponse:
 
         # 分页查询
         offset = (request.page - 1) * request.page_size
-        paginated_query = f"SELECT * FROM images i WHERE {where_sql} ORDER BY {order_by} LIMIT ? OFFSET ?"
+        paginated_query = f"""
+            SELECT i.*, f.tags as tags_text
+            FROM images i
+            LEFT JOIN images_fts f ON i.id = f.rowid
+            WHERE {where_sql}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+        """
         params.extend([request.page_size, offset])
 
         cursor.execute(paginated_query, params)
         rows = cursor.fetchall()
 
-        images = [ImageResponse(**dict(row)) for row in rows]
+        results = []
+        for row in rows:
+            tags_text = row['tags_text'] if row['tags_text'] else row['tags']
+            tags = tags_text.split(' ') if tags_text else []
+            results.append({
+                "md5": row['md5'],
+                "filename": row['filename'],
+                "tags": tags,
+                "w": row['width'],
+                "h": row['height'],
+                "size": row['file_size'],
+                "is_trash": 'trash_bin' in tags
+            })
 
-        return SearchResponse(
-            images=images,
-            total=total,
-            page=request.page,
-            page_size=request.page_size,
-            expanded_tags=expanded_include,
-        )
+        return {"total": total, "results": results}
 
 
 @router.post("/search")
@@ -186,7 +205,6 @@ async def search_images(request: Request):
     return await search_images_simple(SearchRequest(**data))
 
 
-@router.post("/search/advanced")
 async def advanced_search(request: AdvancedSearchRequest):
     """
     高级搜索（完全兼容旧项目搜索逻辑）
@@ -196,6 +214,7 @@ async def advanced_search(request: AdvancedSearchRequest):
     """
     where_clauses = ["1=1"]
     params = []
+    tags_expr = "NULLIF(f.tags, '')"
 
     # 处理包含关键词组（AND 关系，每组内部是 OR 关系）
     for kw_group in request.keywords:
@@ -203,7 +222,7 @@ async def advanced_search(request: AdvancedSearchRequest):
             continue
         or_conditions = []
         for kw in kw_group:
-            or_conditions.append("i.tags LIKE ?")
+            or_conditions.append(f"{tags_expr} LIKE ?")
             params.append(f"%{kw}%")
         if or_conditions:
             where_clauses.append(f"({' OR '.join(or_conditions)})")
@@ -214,7 +233,7 @@ async def advanced_search(request: AdvancedSearchRequest):
             continue
         or_conditions = []
         for ex in ex_group:
-            or_conditions.append("i.tags LIKE ?")
+            or_conditions.append(f"{tags_expr} LIKE ?")
             params.append(f"%{ex}%")
         if or_conditions:
             where_clauses.append(f"NOT ({' OR '.join(or_conditions)})")
@@ -229,7 +248,7 @@ async def advanced_search(request: AdvancedSearchRequest):
                 continue
             or_conditions = []
             for kw in kw_group:
-                or_conditions.append("i.tags LIKE ?")
+                or_conditions.append(f"{tags_expr} LIKE ?")
                 params.append(f"%{kw}%")
             if or_conditions:
                 and_conditions.append(f"({' OR '.join(or_conditions)})")
@@ -259,10 +278,10 @@ async def advanced_search(request: AdvancedSearchRequest):
     # 标签数量筛选
     tag_count_expr = """
         CASE
-            WHEN i.tags IS NULL OR i.tags = '' THEN 0
-            ELSE LENGTH(i.tags) - LENGTH(REPLACE(i.tags, ' ', '')) + 1
+            WHEN {tags_expr} IS NULL OR {tags_expr} = '' THEN 0
+            ELSE LENGTH({tags_expr}) - LENGTH(REPLACE({tags_expr}, ' ', '')) + 1
         END
-    """
+    """.format(tags_expr=tags_expr)
 
     if request.min_tags > 0:
         where_clauses.append(f"({tag_count_expr}) >= ?")
@@ -289,13 +308,20 @@ async def advanced_search(request: AdvancedSearchRequest):
         cursor = conn.cursor()
 
         # 获取总数
-        count_query = f"SELECT COUNT(*) as total FROM images i WHERE {where_sql}"
+        count_query = f"""
+            SELECT COUNT(*) as total
+            FROM images i
+            LEFT JOIN images_fts f ON i.id = f.rowid
+            WHERE {where_sql}
+        """
         cursor.execute(count_query, params)
         total = cursor.fetchone()['total']
 
         # 分页查询
         query = f"""
-            SELECT i.* FROM images i
+            SELECT i.*, f.tags as tags_text
+            FROM images i
+            LEFT JOIN images_fts f ON i.id = f.rowid
             WHERE {where_sql}
             ORDER BY {order_sql}
             LIMIT ? OFFSET ?
@@ -305,16 +331,15 @@ async def advanced_search(request: AdvancedSearchRequest):
 
         results = []
         for r in rows:
-            tags_text = r['tags'] if r['tags'] else ""
+            tags_text = r['tags_text'] if r['tags_text'] else ""
             tags = tags_text.split(' ') if tags_text else []
             results.append({
-                "id": r['id'],
                 "md5": r['md5'],
                 "filename": r['filename'],
                 "tags": tags,
-                "width": r['width'],
-                "height": r['height'],
-                "file_size": r['file_size'],
+                "w": r['width'],
+                "h": r['height'],
+                "size": r['file_size'],
                 "is_trash": 'trash_bin' in tags
             })
 
@@ -335,7 +360,7 @@ async def get_all_tags():
             return {"tags": [row['name'] for row in rows]}
 
         # 降级：从 images 表获取
-        cursor.execute("SELECT tags FROM images WHERE tags != ''")
+        cursor.execute("SELECT tags FROM images_fts WHERE tags != ''")
         all_tags = set()
         for row in cursor.fetchall():
             tags = row['tags'].split()

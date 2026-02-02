@@ -323,7 +323,8 @@ display: block;
 
 /* 批量模式下禁用 header 内部文本和图标的选择，方便拖拽 */
 .group-header.batch-mode .group-name-text,
-.group-header.batch-mode i[data-lucide] {
+.group-header.batch-mode i[data-lucide],
+.group-header.batch-mode svg {
     user-select: none;
     pointer-events: none;
 }
@@ -350,12 +351,34 @@ display: block;
     pointer-events: auto;
 }
 
+/* 规则树图标尺寸兜底：避免 lucide 默认 24px 造成不一致 */
+.group-header .lucide {
+    flex-shrink: 0;
+}
+
+
+/* 触屏设备下显示规则树操作按钮（避免 hover 不生效） */
+@media (hover: none) and (pointer: coarse) {
+    .rule-action-btn {
+        opacity: 1 !important;
+    }
+}
+
 /* 复选框包装器样式 - 增大点击区域，显示拖拽光标 */
 .batch-checkbox-wrapper {
     flex-shrink: 0;
     border-radius: 4px;
     transition: background-color 0.15s ease;
     cursor: grab;
+}
+
+/* 组名/图标区域禁用选中文本，避免拖拽被文字选择打断 */
+.group-name-wrapper {
+    user-select: none;
+}
+/* header 区域禁用文本选择，避免拖拽被文字选择打断 */
+.group-header {
+    user-select: none;
 }
 
 .batch-checkbox-wrapper:active {

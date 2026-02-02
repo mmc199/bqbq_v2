@@ -6,6 +6,7 @@
 import { ref, computed, nextTick, watch } from 'vue'
 import { Folder, FolderX, AlertTriangle, ChevronDown, FolderPlus, Plus, Trash2, Eye, EyeOff } from 'lucide-vue-next'
 import type { RuleGroup, RuleKeyword } from '@/types'
+import { useToast } from '@/composables/useToast'
 
 const props = defineProps<{
   group: RuleGroup
@@ -20,6 +21,7 @@ const props = defineProps<{
   selectedGroupIds?: Set<number>
   searchText?: string
   dragOverGapKey?: string | null
+  touchDropTargetId?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -27,7 +29,7 @@ const emit = defineEmits<{
   'startAddGroup': [parentId: number]
   'startAddKeyword': [groupId: number]
   'deleteGroup': [group: RuleGroup]
-  'deleteKeyword': [keywordId: number]
+  'deleteKeyword': [keyword: RuleKeyword]
   'toggleEnabled': [group: RuleGroup]
   'toggleKeywordEnabled': [keyword: RuleKeyword]
   'toggleSelection': [groupId: number]
@@ -45,13 +47,15 @@ const emit = defineEmits<{
   'renameGroup': [groupId: number, name: string]
 }>()
 
+const toast = useToast()
+
 const isEditingName = ref(false)
 const editingName = ref('')
 const editInputRef = ref<HTMLInputElement | null>(null)
 const isDragOver = ref(false)
+const ignoreBlur = ref(false)
 
 const isExpanded = computed(() => props.expandedIds.has(props.group.id))
-const hasContent = computed(() => props.group.children.length > 0 || props.group.keywords.length > 0)
 const isDragging = computed(() => {
   if (!props.draggingId) return false
   if (props.draggingId === props.group.id) return true
@@ -61,25 +65,27 @@ const isDragging = computed(() => {
   return false
 })
 const isValidDropTarget = computed(() => {
-  if (!props.draggingId) return false
-  if (props.draggingId === props.group.id) return false
-  if (props.batchEditMode && props.selectedGroupIds?.has(props.draggingId)) {
-    return !props.selectedGroupIds.has(props.group.id)
-  }
-  return true
+  return !!props.draggingId
 })
+const isTouchDropTarget = computed(() => props.touchDropTargetId === props.group.id)
 const isSelected = computed(() => props.selectedGroupIds?.has(props.group.id) ?? false)
 const isDisabled = computed(() => !props.group.enabled)
 const isMatch = computed(() => props.group.isMatch ?? false)
 const isConflict = computed(() => props.group.isConflict ?? false)
 const isEmptyNameGroup = computed(() => !props.group.name || props.group.name.trim() === '')
 
+const emptyNameLabel = computed(() => {
+  if (typeof props.group.id === 'number') return `[空名组 #${props.group.id}]`
+  return '[空名组]'
+})
+
 const displayNameHtml = computed(() => {
   if (isConflict.value) {
-    return `<span class="text-red-600">${props.group.name || '[空名组]'}</span><span class="text-xs text-red-500 bg-red-100 px-1 rounded ml-1">⚠️冲突</span>`
+    const reason = props.group.conflictReason || '循环依赖'
+    return `<span class="text-red-600">${props.group.name || '[空名组]'}</span><span class="text-xs text-red-500 bg-red-100 px-1 rounded ml-1" title="${reason}">⚠️冲突</span>`
   }
   if (isEmptyNameGroup.value) {
-    return `<span class="text-red-500 bg-red-50 px-1 rounded">[空名组 #${props.group.id}]</span>`
+    return `<span class="text-red-500 bg-red-50 px-1 rounded">${emptyNameLabel.value}</span>`
   }
   const color = isMatch.value ? 'text-blue-700' : 'text-slate-700'
   return `<span class="group-name-text ${color}">${props.group.name}</span>`
@@ -97,12 +103,9 @@ const folderIconClass = computed(() => {
   return 'text-slate-500'
 })
 
-function highlightText(text: string): string {
-  const search = props.searchText?.trim().toLowerCase()
-  if (!search) return text
-  const regex = new RegExp(`(${search})`, 'gi')
-  return text.replace(regex, '<mark class="bg-yellow-200 px-0.5 rounded">$1</mark>')
-}
+const childCount = computed(() => {
+  return Array.isArray(props.group.children) ? props.group.children.length : 0
+})
 
 function isKeywordMatch(keyword: string): boolean {
   const search = props.searchText?.trim().toLowerCase()
@@ -115,14 +118,22 @@ function startEditName(e: MouseEvent) {
   if (props.batchEditMode) return
   isEditingName.value = true
   editingName.value = props.group.name || ''
+  ignoreBlur.value = false
   nextTick(() => editInputRef.value?.focus())
 }
 
 function confirmEditName() {
   if (!isEditingName.value) return
   const name = editingName.value.trim()
+  if (!name) {
+    toast.error('组名不能为空！')
+    return
+  }
+  if (name === (props.group.name || '')) {
+    cancelEditName()
+    return
+  }
   isEditingName.value = false
-  if (!name || name === props.group.name) return
   emit('renameGroup', props.group.id, name)
 }
 
@@ -130,6 +141,11 @@ function cancelEditName() {
   isEditingName.value = false
   editingName.value = props.group.name || ''
 }
+
+function markIgnoreBlur() {
+  ignoreBlur.value = true
+}
+
 
 function handleDragStart(e: DragEvent) {
   e.stopPropagation()
@@ -160,6 +176,11 @@ function handleDragOver(e: DragEvent) {
 
 function handleDragLeave(e: DragEvent) {
   e.stopPropagation()
+  const current = e.currentTarget as HTMLElement | null
+  const related = e.relatedTarget as Node | null
+  if (current && related && current.contains(related)) {
+    return
+  }
   isDragOver.value = false
 }
 
@@ -202,7 +223,7 @@ watch(() => props.draggingId, (val) => {
     class="group-node group relative"
     :class="[
       isDragging ? 'dragging' : '',
-      isDragOver && isValidDropTarget ? 'drop-target-child' : '',
+      (isDragOver && isValidDropTarget) || isTouchDropTarget ? 'drop-target-child' : '',
       isConflict ? 'border-2 border-red-400 bg-red-50' : '',
       batchEditMode && isSelected ? 'ring-2 ring-blue-500 bg-blue-50' : '',
       isMatch ? 'bg-blue-50 border-blue-400' : '',
@@ -219,7 +240,7 @@ watch(() => props.draggingId, (val) => {
     @drop="handleDrop"
   >
     <div
-      class="group-header flex items-center justify-between p-2 rounded cursor-pointer"
+      class="group-header flex items-center p-2 rounded cursor-pointer whitespace-nowrap"
       :class="[
         batchEditMode ? 'batch-mode' : '',
         isMatch ? 'hover:bg-blue-100' : (isConflict ? 'hover:bg-red-100' : 'hover:bg-slate-100')
@@ -227,7 +248,7 @@ watch(() => props.draggingId, (val) => {
       @click="emit('toggleExpand', group.id)"
       @dblclick="startEditName"
     >
-      <div class="flex items-center gap-1 font-bold text-sm min-w-0">
+      <div class="flex items-center gap-1 font-bold text-sm">
         <label v-if="batchEditMode" class="batch-checkbox-wrapper flex items-center justify-center w-7 h-7 -ml-1 mr-1 cursor-pointer">
           <input
             type="checkbox"
@@ -236,52 +257,79 @@ watch(() => props.draggingId, (val) => {
             @click.stop="handleCheckboxClick"
           />
         </label>
-        <component :is="folderIcon" class="w-4 h-4" :class="folderIconClass" />
-        <span v-if="!isEditingName" v-html="displayNameHtml" />
-        <input
-          v-else
-          ref="editInputRef"
-          v-model="editingName"
-          type="text"
-          class="px-2 py-1 border border-blue-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-          @click.stop
-          @keydown.enter.prevent="confirmEditName"
-          @keydown.escape.prevent="cancelEditName"
-          @blur="confirmEditName"
-        />
+
+        <template v-if="!isEditingName">
+          <span class="group-name-wrapper inline-flex items-center gap-1">
+            <span class="relative inline-flex items-center justify-center" draggable="true" @dragstart="handleDragStart" @dragend="handleDragEnd">
+              <component :is="folderIcon" class="w-5 h-5" :class="folderIconClass" :size="20" />
+              <span
+                class="absolute inset-0 flex items-center justify-center text-[9px] leading-none font-bold text-blue-600 pointer-events-none"
+              >{{ childCount }}</span>
+            </span>
+            <span v-html="displayNameHtml" draggable="true" @dragstart="handleDragStart" @dragend="handleDragEnd" />
+          </span>
+        </template>
+
+        <div v-else class="group-editor-wrapper p-2 bg-white rounded shadow-md flex flex-col gap-2" @click.stop>
+          <input
+            ref="editInputRef"
+            v-model="editingName"
+            type="text"
+            :placeholder="isEmptyNameGroup ? '请输入组名以修复空名组...' : '输入组名...'"
+            :class="[
+              'w-full p-1 border rounded text-sm font-medium focus:outline-none focus:ring-1',
+              isEmptyNameGroup ? 'border-red-400 focus:ring-red-500 bg-red-50' : 'border-blue-400 focus:ring-blue-500'
+            ]"
+            @click.stop
+            @keydown.enter.prevent="confirmEditName"
+            @keydown.escape.prevent="cancelEditName"
+          />
+          <div class="flex justify-between items-center text-xs">
+            <button
+              class="px-3 py-1 bg-slate-200 text-slate-700 rounded hover:bg-slate-300 transition"
+              @mousedown.prevent="markIgnoreBlur"
+              @click.stop="cancelEditName"
+            >取消</button>
+            <button
+              class="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 transition"
+              @mousedown.prevent="markIgnoreBlur"
+              @click.stop="confirmEditName"
+            >保存</button>
+          </div>
+        </div>
       </div>
 
-      <div class="flex items-center gap-1">
-        <ChevronDown
-          v-if="hasContent"
-          class="w-4 h-4 text-slate-400 transition transform"
-          :class="isExpanded ? 'rotate-180' : ''"
-        />
+      <div class="flex items-center gap-1 flex-shrink-0 ml-2">
         <div v-if="!batchEditMode" class="flex items-center gap-1">
-          <button class="p-1 text-blue-500 hover:text-blue-700 opacity-0 group-hover:opacity-100 transition-opacity" title="添加子组" @click.stop="emit('startAddGroup', group.id)">
-            <FolderPlus class="w-4 h-4" />
+          <button class="rule-action-btn p-1 text-blue-500 hover:text-blue-700 opacity-0 group-hover:opacity-100 transition-opacity" title="添加子组" @click.stop="emit('startAddGroup', group.id)">
+            <FolderPlus class="w-4 h-4" :size="16" />
           </button>
-          <button class="p-1 text-green-500 hover:text-green-700 opacity-0 group-hover:opacity-100 transition-opacity" title="添加关键词" @click.stop="emit('startAddKeyword', group.id)">
-            <Plus class="w-4 h-4" />
+          <button class="rule-action-btn p-1 text-green-500 hover:text-green-700 opacity-0 group-hover:opacity-100 transition-opacity" title="添加同义词" @click.stop="emit('startAddKeyword', group.id)">
+            <Plus class="w-4 h-4" :size="16" />
           </button>
           <button
             :class="[
-              'p-1 opacity-0 group-hover:opacity-100 transition-opacity',
+              'rule-action-btn p-1 opacity-0 group-hover:opacity-100 transition-opacity',
               isDisabled ? 'text-yellow-500 hover:text-yellow-700' : 'text-emerald-500 hover:text-emerald-700'
             ]"
             :title="isDisabled ? '启用组' : '禁用组'"
             @click.stop="emit('toggleEnabled', group)"
           >
-            <component :is="isDisabled ? EyeOff : Eye" class="w-4 h-4" />
+            <component :is="isDisabled ? EyeOff : Eye" class="w-4 h-4" :size="16" />
           </button>
-          <button class="p-1 text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity" title="删除组" @click.stop="emit('deleteGroup', group)">
-            <Trash2 class="w-4 h-4" />
+          <button class="rule-action-btn p-1 text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity" title="彻底删除组" @click.stop="emit('deleteGroup', group)">
+            <Trash2 class="w-4 h-4" :size="16" />
           </button>
         </div>
+        <ChevronDown
+          class="w-4 h-4 text-slate-400 transition transform"
+          :class="isExpanded ? 'rotate-180' : ''"
+          :size="16"
+        />
       </div>
     </div>
 
-    <div :class="['flex flex-wrap gap-1 pl-6 pt-1 pb-2 border-l border-slate-200 ml-2', isExpanded ? '' : 'hidden']">
+    <div :class="['flex flex-wrap gap-1 pl-6 pt-1 pb-2 border-l border-slate-200 ml-2', (isExpanded && !isEditingName && addingGroupParentId !== group.id) ? '' : 'hidden']">
       <span
         v-for="kw in group.keywords"
         :key="kw.id"
@@ -293,10 +341,10 @@ watch(() => props.draggingId, (val) => {
         ]"
         @click.stop="emit('toggleKeywordEnabled', kw)"
       >
-        <span v-html="highlightText(kw.keyword)" />
+        <span>{{ kw.keyword }}</span>
         <button
           class="ml-1 text-lg leading-none rounded-full hover:opacity-70 text-white/80 transition-opacity"
-          @click.stop="emit('deleteKeyword', kw.id)"
+          @click.stop="emit('deleteKeyword', kw)"
         >
           &times;
         </button>
@@ -318,10 +366,29 @@ watch(() => props.draggingId, (val) => {
       </div>
     </div>
 
-    <div :class="['ml-4 border-l border-slate-200', isExpanded ? '' : 'hidden']">
+    <div :class="['ml-4 border-l border-slate-200', (isExpanded && !isEditingName) ? '' : 'hidden']">
+      <div v-if="addingGroupParentId === group.id" class="child-group-add-wrapper p-2 bg-white rounded shadow-md flex flex-col gap-2 mb-2">
+        <input
+          :value="newGroupName"
+          type="text"
+          placeholder="输入新子组名称..."
+          class="w-full p-1 border border-blue-400 rounded text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500"
+          autofocus
+          @input="emit('update:newGroupName', ($event.target as HTMLInputElement).value)"
+          @keydown.enter="emit('confirmAddGroup')"
+          @keydown.escape="emit('cancelAdd')"
+          @blur="emit('confirmAddGroup')"
+        />
+        <div class="flex justify-between items-center text-xs">
+          <button class="px-3 py-1 bg-slate-200 text-slate-700 rounded hover:bg-slate-300 transition" @click="emit('cancelAdd')">取消</button>
+          <button class="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 transition" @click="emit('confirmAddGroup')">创建</button>
+        </div>
+      </div>
       <template v-for="child in group.children" :key="child.id">
         <div
           :class="['drop-gap', dragOverGapKey === `gap-${group.id}-${child.id}` ? 'drag-over' : '']"
+          :data-gap-key="`gap-${group.id}-${child.id}`"
+          :data-gap-parent="group.id"
           @dragover="handleGapDragOver($event, `gap-${group.id}-${child.id}`)"
           @dragleave="handleGapDragLeave"
           @drop="handleGapDrop"
@@ -339,6 +406,7 @@ watch(() => props.draggingId, (val) => {
           :selected-group-ids="selectedGroupIds"
           :search-text="searchText"
           :drag-over-gap-key="dragOverGapKey"
+          :touch-drop-target-id="touchDropTargetId"
           @toggle-expand="emit('toggleExpand', $event)"
           @start-add-group="emit('startAddGroup', $event)"
           @start-add-keyword="emit('startAddKeyword', $event)"
@@ -364,28 +432,12 @@ watch(() => props.draggingId, (val) => {
       <div
         v-if="group.children.length > 0"
         :class="['drop-gap', dragOverGapKey === `gap-${group.id}-end` ? 'drag-over' : '']"
+        :data-gap-key="`gap-${group.id}-end`"
+        :data-gap-parent="group.id"
         @dragover="handleGapDragOver($event, `gap-${group.id}-end`)"
         @dragleave="handleGapDragLeave"
         @drop="handleGapDrop"
       ></div>
-    </div>
-
-    <div v-if="addingGroupParentId === group.id" class="child-group-add-wrapper p-2 bg-white rounded shadow-md flex flex-col gap-2 mb-2">
-      <input
-        :value="newGroupName"
-        type="text"
-        placeholder="输入新子组名称..."
-        class="w-full p-1 border border-blue-400 rounded text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500"
-        autofocus
-        @input="emit('update:newGroupName', ($event.target as HTMLInputElement).value)"
-        @keydown.enter="emit('confirmAddGroup')"
-        @keydown.escape="emit('cancelAdd')"
-        @blur="emit('confirmAddGroup')"
-      />
-      <div class="flex justify-between items-center text-xs">
-        <button class="px-3 py-1 bg-slate-200 text-slate-700 rounded hover:bg-slate-300 transition" @click="emit('cancelAdd')">取消</button>
-        <button class="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 transition" @click="emit('confirmAddGroup')">创建</button>
-      </div>
     </div>
   </div>
 </template>

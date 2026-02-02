@@ -153,6 +153,7 @@ function editTag(index: number) {
 
   inputValue.value = text
   inputRef.value?.focus()
+  emit('inputUpdate', inputValue.value)
 }
 
 function handleInput() {
@@ -239,7 +240,7 @@ defineExpose({
       v-for="(tag, index) in tags"
       :key="`${typeof tag === 'string' ? tag : tag.text}-${index}`"
       :class="[
-        'tag-capsule flex items-center gap-1 px-3 py-1 rounded-full text-sm font-bold cursor-pointer select-none whitespace-nowrap transition-transform active:scale-95 max-w-full break-all border',
+        'tag-capsule flex items-center gap-1 px-3 py-1 rounded-full text-sm font-bold cursor-pointer select-none transition-transform active:scale-95 max-w-full break-all border',
         getTagStyle(tag)
       ]"
       :title="getTagTitle(tag)"

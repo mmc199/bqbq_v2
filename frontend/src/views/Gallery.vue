@@ -4,29 +4,34 @@
  * 一比一复刻旧项目的所有功能
  */
 import { ref, onMounted, computed, watch } from 'vue'
-import { Search } from 'lucide-vue-next'
+import { Loader2 } from 'lucide-vue-next'
 import TagInput from '@/components/TagInput.vue'
 import MemeCard from '@/components/MemeCard.vue'
 import RuleTree from '@/components/RuleTree.vue'
 import SparkMD5 from 'spark-md5'
 import FloatingButtons from '@/components/FloatingButtons.vue'
 import ToastContainer from '@/components/ToastContainer.vue'
-import { useImageApi, useSystemApi } from '@/composables/useApi'
+import { useImageApi, useRulesApi, useSystemApi } from '@/composables/useApi'
 import { useGlobalStore } from '@/stores/useGlobalStore'
 import { useToast } from '@/composables/useToast'
 import type { MemeImage, RuleGroup } from '@/types'
 
 // API & Store
 const imageApi = useImageApi()
+const rulesApi = useRulesApi()
 const systemApi = useSystemApi()
 const globalStore = useGlobalStore()
 const toast = useToast()
 
 // 状态
 const images = ref<MemeImage[]>([])
-const searchTags = ref<{ text: string; exclude: boolean; synonym: boolean; synonymWords: string[] | null }[]>([])
+type SearchTag = { text: string; exclude: boolean; synonym: boolean; synonymWords: string[] | null }
+const searchTags = ref<Array<SearchTag | string>>([])
 const searchInputRef = ref<InstanceType<typeof TagInput> | null>(null)
 const allTags = ref<string[]>([])
+const baseTags = ref<string[]>([])
+const tagInputQuery = ref('')
+const filteredTagSuggestions = ref<string[]>([])
 const isLoading = ref(false)
 const totalImages = ref(0)
 const limit = 40
@@ -68,6 +73,87 @@ const originalTagsCount = ref(0)
 // 计算属性
 
 const SUPPORTED_EXTENSIONS = ['gif', 'png', 'jpg', 'webp']
+const TAG_SUGGESTION_LIMIT = 4
+const MD5_ID_LEN = 8
+
+function md5ToId(md5: string) {
+  if (!md5) return 0
+  const slice = md5.slice(0, MD5_ID_LEN)
+  const parsed = Number.parseInt(slice, 16)
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function normalizeSearchTags(tags: Array<SearchTag | string>): SearchTag[] {
+  return tags
+    .map((tag) => {
+      if (typeof tag === 'string') {
+        return { text: tag, exclude: false, synonym: false, synonymWords: null }
+      }
+      return tag
+    })
+    .filter((tag) => tag.text)
+}
+
+function collectRuleKeywords(): string[] {
+  const tree = globalStore.rulesTree
+  if (!tree || !tree.groups) return []
+  const keywords = new Set<string>()
+  const stack = [...tree.groups]
+
+  while (stack.length > 0) {
+    const node = stack.pop()
+    if (!node) continue
+    if (typeof node.name === 'string') {
+      keywords.add(node.name)
+    }
+    node.keywords.forEach((kw) => {
+      if (typeof kw.keyword === 'string') {
+        keywords.add(kw.keyword)
+      }
+    })
+    if (node.children && node.children.length > 0) {
+      node.children.forEach(child => stack.push(child))
+    }
+  }
+  return Array.from(keywords)
+}
+
+function buildAllSuggestions(tags: string[]): string[] {
+  const unique = new Set<string>()
+  tags.forEach((tag) => {
+    if (typeof tag === 'string') {
+      unique.add(tag)
+    }
+  })
+  collectRuleKeywords().forEach((tag) => unique.add(tag))
+  return Array.from(unique)
+}
+
+function filterAndUpdateDatalist(currentInput: string) {
+  const source = allTags.value
+  if (!source.length) {
+    filteredTagSuggestions.value = []
+    return
+  }
+
+  const isExclude = currentInput.startsWith('-')
+  const prefix = isExclude ? '-' : ''
+  const searchText = isExclude ? currentInput.slice(1) : currentInput
+
+  if (searchText.startsWith('.')) {
+    const partialExt = searchText.slice(1).toLowerCase()
+    filteredTagSuggestions.value = SUPPORTED_EXTENSIONS
+      .filter(ext => ext.startsWith(partialExt))
+      .map(ext => `${prefix}.${ext}`)
+    return
+  }
+
+  const filtered = source.filter(tag =>
+    tag.toLowerCase().includes(searchText.toLowerCase())
+  )
+  const limited = filtered.slice(0, TAG_SUGGESTION_LIMIT)
+  filteredTagSuggestions.value = limited.map(tag => `${prefix}${tag}`)
+}
 
 function isExtensionTag(text: string) {
   if (!text.startsWith('.')) return false
@@ -130,29 +216,25 @@ async function searchImages(resetPage = true) {
 
   isLoading.value = true
 
+  const normalizedTags = normalizeSearchTags(searchTags.value)
+
   // 分离标签类型（旧项目逻辑）
-  const extensionIncludes = searchTags.value
+  const extensionIncludes = normalizedTags
     .filter(t => !t.exclude && !t.synonym && isExtensionTag(t.text))
     .map(t => t.text.slice(1).toLowerCase())
 
-  const extensionExcludes = searchTags.value
+  const extensionExcludes = normalizedTags
     .filter(t => t.exclude && !t.synonym && isExtensionTag(t.text))
     .map(t => t.text.slice(1).toLowerCase())
 
-  const normalIncludes = searchTags.value
+  const normalIncludes = normalizedTags
     .filter(t => !t.exclude && !t.synonym && !isExtensionTag(t.text))
     .map(t => t.text)
-  const synonymIncludes = searchTags.value.filter(t => !t.exclude && t.synonym)
-  const normalExcludes = searchTags.value
+  const synonymIncludes = normalizedTags.filter(t => !t.exclude && t.synonym)
+  const normalExcludes = normalizedTags
     .filter(t => t.exclude && !t.synonym && !isExtensionTag(t.text))
     .map(t => t.text)
-  const synonymExcludes = searchTags.value.filter(t => t.exclude && t.synonym)
-
-  if (isTrashMode.value) {
-    normalIncludes.push('trash_bin')
-  } else {
-    normalExcludes.push('trash_bin')
-  }
+  const synonymExcludes = normalizedTags.filter(t => t.exclude && t.synonym)
 
   const expandedNormalIncludes = expandKeywordsToGroups(normalIncludes)
 
@@ -202,14 +284,19 @@ async function searchImages(resetPage = true) {
   isLoading.value = false
 
   if (result.success && result.data) {
-    const mapped = result.data.results.map(item => ({
-      id: item.id,
+    const rawResults = result.data.results
+    const visibleResults = isTrashMode.value
+      ? rawResults
+      : rawResults.filter(item => !item.is_trash && !item.tags.includes('trash_bin'))
+
+    const mapped = visibleResults.map(item => ({
+      id: md5ToId(item.md5),
       md5: item.md5,
       filename: item.filename,
       tags: item.tags.join(' '),
-      file_size: item.file_size,
-      width: item.width,
-      height: item.height,
+      file_size: item.size,
+      width: item.w,
+      height: item.h,
       created_at: '',
     }))
 
@@ -219,8 +306,8 @@ async function searchImages(resetPage = true) {
       images.value.push(...mapped)
     }
     totalImages.value = result.data.total
-    offset.value += result.data.results.length
-    hasMore.value = result.data.results.length >= limit
+    offset.value += rawResults.length
+    hasMore.value = rawResults.length >= limit
 
     originalTagsCount.value = totalOriginal
     expandedTagsCount.value = totalExpanded
@@ -228,10 +315,16 @@ async function searchImages(resetPage = true) {
 }
 
 watch(searchTags, (tags) => {
-  const hasTrashTag = tags.some(t => t.text === 'trash_bin' && !t.exclude)
+  const normalized = normalizeSearchTags(tags)
+  const hasTrashTag = normalized.some(t => t.text === 'trash_bin' && !t.exclude)
   if (isTrashMode.value !== hasTrashTag) {
     isTrashMode.value = hasTrashTag
   }
+}, { deep: true })
+
+watch(() => globalStore.rulesTree, () => {
+  allTags.value = buildAllSuggestions(baseTags.value)
+  filterAndUpdateDatalist(tagInputQuery.value)
 }, { deep: true })
 
 // 加载更多
@@ -252,14 +345,18 @@ function handleMainScroll() {
 async function loadAllTags(forceRefresh = false) {
   // 检查缓存是否有效
   if (!forceRefresh && globalStore.isTagCacheValid()) {
-    allTags.value = globalStore.tagCache
+    baseTags.value = [...globalStore.tagCache]
+    allTags.value = buildAllSuggestions(baseTags.value)
+    filterAndUpdateDatalist('')
     return
   }
 
   // 尝试从缓存加载
   const cached = globalStore.loadTagCache()
   if (!forceRefresh && cached) {
-    allTags.value = cached
+    baseTags.value = [...cached]
+    allTags.value = buildAllSuggestions(baseTags.value)
+    filterAndUpdateDatalist('')
     return
   }
 
@@ -267,15 +364,29 @@ async function loadAllTags(forceRefresh = false) {
   const result = await systemApi.getAllTags()
   if (result.success && result.data) {
     const tags = result.data.tags || []
-    allTags.value = tags
+    baseTags.value = [...tags]
+    allTags.value = buildAllSuggestions(baseTags.value)
     globalStore.saveTagCache(tags)
+    filterAndUpdateDatalist('')
   }
 }
+
 
 // 处理搜索提交
 function handleSearchSubmit() {
   searchImages(true)
 }
+
+function handleSearchInputUpdate(value: string) {
+  tagInputQuery.value = value
+  filterAndUpdateDatalist(value)
+}
+
+function handleTempInputUpdate(value: string) {
+  tagInputQuery.value = value
+  filterAndUpdateDatalist(value)
+}
+
 
 function focusSearchInput() {
   searchInputRef.value?.focus()
@@ -283,20 +394,7 @@ function focusSearchInput() {
 }
 
 // 处理复制标签（旧项目行为）
-async function handleCopyImage(image: MemeImage) {
-  const tagsText = (image.tags || '').trim()
-  if (!tagsText) {
-    toast.warning('无标签可复制')
-    return
-  }
-  try {
-    await navigator.clipboard.writeText(tagsText)
-    toast.success('标签已复制')
-  } catch (err) {
-    console.error('复制失败:', err)
-    toast.error('复制失败，请手动复制')
-  }
-}
+
 
 // 处理删除图片（旧项目：切换 trash_bin 标签）
 async function handleDeleteImage(image: MemeImage) {
@@ -306,34 +404,30 @@ async function handleDeleteImage(image: MemeImage) {
     ? currentTags.filter(t => t !== 'trash_bin')
     : [...currentTags, 'trash_bin']
 
-  const result = await imageApi.updateImageTags(
-    image.id,
-    nextTags,
-    globalStore.clientId,
-    globalStore.rulesVersion
-  )
+  const idx = images.value.findIndex(img => img.md5 === image.md5)
+  const oldTags = idx !== -1 ? (images.value[idx]?.tags ?? image.tags) : image.tags
 
-  if (result.success && result.data) {
-    globalStore.updateRulesVersion(result.data.new_version)
-    const idx = images.value.findIndex(img => img.id === image.id)
-    if (idx !== -1) {
-      const updated = { ...images.value[idx], tags: nextTags.join(' ') }
-      if (isTrashMode.value && !updated.tags.includes('trash_bin')) {
-        images.value.splice(idx, 1)
-      } else if (!isTrashMode.value && updated.tags.includes('trash_bin')) {
-        images.value.splice(idx, 1)
-      } else {
-        images.value[idx] = updated
-      }
+  if (idx !== -1) {
+    const existing = images.value[idx]
+    if (existing) {
+      images.value[idx] = { ...existing, tags: nextTags.join(' ') }
     }
-    toast.success(hasTrash ? '已恢复' : '已移入回收站')
-  } else {
-    toast.error('操作失败')
+  }
+
+  const result = await systemApi.updateTags(image.md5, nextTags)
+  const ok = result.success && (result.data?.success ?? true)
+
+  if (!ok && idx !== -1) {
+    const existing = images.value[idx]
+    if (existing) {
+      images.value[idx] = { ...existing, tags: oldTags || '' }
+    }
   }
 }
 
+
 async function handleUpdateTags(image: MemeImage, nextTags: string[]) {
-  const index = images.value.findIndex(img => img.id === image.id)
+  const index = images.value.findIndex(img => img.md5 === image.md5)
   const oldTags = (index !== -1 ? images.value[index]?.tags : image.tags) || ''
   const nextText = nextTags.join(' ')
 
@@ -344,33 +438,17 @@ async function handleUpdateTags(image: MemeImage, nextTags: string[]) {
     }
   }
 
-  const result = await imageApi.updateImageTags(
-    image.id,
-    nextTags,
-    globalStore.clientId,
-    globalStore.rulesVersion
-  )
+  const result = await systemApi.updateTags(image.md5, nextTags)
+  const ok = result.success && (result.data?.success ?? true)
 
-  if (result.success && result.data) {
-    globalStore.updateRulesVersion(result.data.new_version)
-    const nowTrash = nextTags.includes('trash_bin')
-    if (index !== -1) {
-      if (isTrashMode.value && !nowTrash) {
-        images.value.splice(index, 1)
-      } else if (!isTrashMode.value && nowTrash) {
-        images.value.splice(index, 1)
-      }
+  if (!ok && index !== -1) {
+    const existing = images.value[index]
+    if (existing) {
+      images.value[index] = { ...existing, tags: oldTags }
     }
-  } else {
-    if (index !== -1) {
-      const existing = images.value[index]
-      if (existing) {
-        images.value[index] = { ...existing, tags: oldTags }
-      }
-    }
-    toast.error('保存标签失败')
   }
 }
+
 
 function triggerUpload() {
   uploadInputRef.value?.click()
@@ -410,14 +488,15 @@ async function uploadFiles(files: FileList | null) {
       if (result.success) {
         toast.success(`上传成功：${file.name}`)
       } else {
-        toast.error(`上传失败：${result.error || '未知错误'}`)
+        toast.error(`上传失败：${result.error}`)
       }
     }
 
     refresh()
   } catch (err) {
     console.error('上传出错:', err)
-    toast.error('上传出错，请重试')
+    const message = err instanceof Error ? err.message : '未知错误'
+    toast.error(`上传出错：${message}`)
   } finally {
     isUploading.value = false
   }
@@ -436,15 +515,21 @@ async function handleExport() {
   toast.info('正在导出数据...')
   const result = await systemApi.exportData()
   if (result.success && result.data) {
-    const url = URL.createObjectURL(result.data)
+    const payload = result.data as Record<string, unknown>
+    const dataStr = JSON.stringify(payload, null, 2)
+    const dataBlob = new Blob([dataStr], { type: 'application/json' })
+    const url = URL.createObjectURL(dataBlob)
     const a = document.createElement('a')
     a.href = url
     a.download = `bqbq_export_${Date.now()}.json`
     a.click()
     URL.revokeObjectURL(url)
-    toast.success('导出成功')
+    const imagesCount = Array.isArray((payload as { images?: unknown }).images)
+      ? (payload as { images?: unknown[] }).images?.length ?? 0
+      : 0
+    toast.success(`导出成功！（${imagesCount} 张图片）`)
   } else {
-    toast.error('导出失败')
+    toast.error(`导出失败：${result.error}`)
   }
 }
 
@@ -461,43 +546,53 @@ async function handleJsonImportChange(e: Event) {
 
   toast.info('正在导入数据...')
   const result = await systemApi.importData(file)
-  if (result.success) {
+  const ok = result.success && (result.data?.success ?? true)
+  if (ok) {
     const added = result.data?.imported_images ?? 0
     const skipped = result.data?.skipped_images ?? 0
     toast.success(`导入成功！新增 ${added} 张，跳过 ${skipped} 张`)
+    await refreshRulesTree()
     searchImages(true)
-    loadAllTags(true) // 强制刷新缓存
   } else {
-    toast.error('导入失败')
+    const message = result.success ? result.data?.error : result.error
+    toast.error(`导入失败：${message}`)
   }
 }
 
 // 处理回收站模式切换
 function handleToggleTrash(isTrash: boolean) {
   isTrashMode.value = isTrash
-  const hasTrashTag = searchTags.value.some(t => t.text === 'trash_bin' && !t.exclude)
+  const hasTrashTag = normalizeSearchTags(searchTags.value).some(t => t.text === 'trash_bin' && !t.exclude)
   if (isTrash && !hasTrashTag) {
     searchTags.value.push({ text: 'trash_bin', exclude: false, synonym: false, synonymWords: null })
   } else if (!isTrash && hasTrashTag) {
-    searchTags.value = searchTags.value.filter(t => !(t.text === 'trash_bin' && !t.exclude))
+    searchTags.value = normalizeSearchTags(searchTags.value)
+      .filter(t => !(t.text === 'trash_bin' && !t.exclude))
   }
-  toast.info(isTrash ? '已进入回收站模式' : '已退出回收站模式')
   searchImages(true)
 }
+
 
 // 处理关键词膨胀切换
 function handleToggleExpansion(enabled: boolean) {
   isExpansionEnabled.value = enabled
-  toast.info(enabled ? '关键词膨胀已开启' : '关键词膨胀已关闭')
-  searchImages(true)
+  if (enabled) {
+    toast.success('同义词膨胀已开启')
+  } else {
+    toast.info('同义词膨胀已关闭')
+  }
+  if (searchTags.value.length > 0) {
+    searchImages(true)
+  }
 }
+
 
 // 处理 HQ 模式切换
 function handleToggleHQ(enabled: boolean) {
   isHQMode.value = enabled
-  toast.info(enabled ? 'HQ 高清模式已开启' : 'HQ 高清模式已关闭')
   searchImages(true)
 }
+
 
 // 处理排序更新
 function handleUpdateSort(newSortBy: string) {
@@ -519,39 +614,47 @@ function handleUpdateTempTags(tags: string[]) {
 
 function handleToggleTempMode(enabled: boolean) {
   isTempTagMode.value = enabled
-  toast.info(enabled ? '批量打标模式已开启' : '批量打标模式已关闭')
+  toast[enabled ? 'success' : 'info'](enabled ? '已进入批量打标模式' : '已退出批量打标模式')
 }
+
 
 async function handleCardTempApply(image: MemeImage) {
-  if (tempTags.value.length === 0) {
-    toast.warning('请先添加临时标签')
-    return
-  }
+  if (tempTags.value.length === 0) return
 
   const currentTags = image.tags ? image.tags.split(' ').filter(t => t) : []
-  const newTags = [...new Set([...currentTags, ...tempTags.value])]
+  const nextTags = [...currentTags]
+  let changed = false
 
-  const result = await imageApi.updateImageTags(
-    image.id,
-    newTags,
-    globalStore.clientId,
-    globalStore.rulesVersion
-  )
-
-  if (result.success && result.data) {
-    globalStore.updateRulesVersion(result.data.new_version)
-    const idx = images.value.findIndex(img => img.id === image.id)
-    if (idx !== -1) {
-      const existing = images.value[idx]
-      if (existing) {
-        images.value[idx] = { ...existing, tags: newTags.join(' ') }
-      }
+  tempTags.value.forEach((tag) => {
+    if (!nextTags.includes(tag)) {
+      nextTags.push(tag)
+      changed = true
     }
-    toast.success('已应用临时标签')
-  } else {
-    toast.error('批量打标失败')
+  })
+
+  if (!changed) return
+
+  const idx = images.value.findIndex(img => img.md5 === image.md5)
+  const oldTags = idx !== -1 ? (images.value[idx]?.tags ?? image.tags) : image.tags
+
+  if (idx !== -1) {
+    const existing = images.value[idx]
+    if (existing) {
+      images.value[idx] = { ...existing, tags: nextTags.join(' ') }
+    }
+  }
+
+  const result = await systemApi.updateTags(image.md5, nextTags)
+  const ok = result.success && (result.data?.success ?? true)
+
+  if (!ok && idx !== -1) {
+    const existing = images.value[idx]
+    if (existing) {
+      images.value[idx] = { ...existing, tags: oldTags || '' }
+    }
   }
 }
+
 
 // 刷新
 function refresh() {
@@ -574,10 +677,17 @@ onMounted(() => {
   searchImages(true)
   loadAllTags()
 })
+
+async function refreshRulesTree() {
+  const result = await rulesApi.getRulesTree()
+  if (result.success && result.data) {
+    globalStore.setRulesTree(result.data)
+  }
+}
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-slate-50 overflow-hidden" :class="{ 'trash-mode-active': isTrashMode }">
+  <div class="h-screen flex flex-col bg-slate-50 text-slate-800 overflow-hidden" :class="{ 'trash-mode-active': isTrashMode }">
     <!-- 顶部搜索栏 - 旧项目结构 -->
     <header
       id="app-header"
@@ -588,11 +698,12 @@ onMounted(() => {
         id="header-search-bar"
         v-model="searchTags"
         title="输入标签搜索图片，支持同义词组(逗号分隔)和排除标签(-前缀)"
-        placeholder="输入标签搜索，空格分隔，-排除..."
+        placeholder="输入关键词 (空格生成胶囊)..."
         theme="mixed"
         :enable-excludes="true"
         :suggestions="allTags"
         @submit="handleSearchSubmit"
+        @input-update="handleSearchInputUpdate"
       />
     </header>
 
@@ -605,42 +716,39 @@ onMounted(() => {
     >
       <!-- 图片网格 - 使用旧项目的列数配置 -->
       <div
-        v-if="images.length > 0"
         id="meme-grid"
         class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4 pb-40"
       >
         <MemeCard
           v-for="(image, index) in images"
-          :key="image.id"
+          :key="image.md5"
           :image="image"
           :index="index"
           :is-trash="isTrashMode"
           :prefer-h-q="isHQMode"
           :temp-mode="isTempTagMode"
-          @copy="handleCopyImage"
           @delete="handleDeleteImage"
           @apply-temp-tags="handleCardTempApply"
           @update-tags="handleUpdateTags"
         />
       </div>
 
-      <!-- 空状态 -->
-      <div
-        v-else-if="!isLoading"
-        class="flex flex-col items-center justify-center py-20 text-slate-400"
-      >
-        <Search class="w-16 h-16 mb-4" />
-        <p class="text-lg">没有找到图片</p>
-        <p class="text-sm mt-2">尝试修改搜索条件或上传新图片</p>
-      </div>
-
       <!-- 加载指示器 -->
-      <div v-if="isLoading" id="loading-indicator" class="flex justify-center py-8">
-        <div class="w-8 h-8 border-4 border-slate-200 border-t-blue-500 rounded-full animate-spin"></div>
+      <div
+        id="loading-indicator"
+        :class="['py-12 text-center text-slate-400', isLoading ? '' : 'hidden']"
+      >
+        <Loader2 class="w-8 h-8 animate-spin mx-auto" />
       </div>
 
       <!-- 到底提示 -->
-      <div v-if="!hasMore && images.length > 0 && !isLoading" id="end-indicator" class="py-12 text-center text-sm font-semibold text-slate-300">
+      <div
+        id="end-indicator"
+        :class="[
+          'py-16 text-center text-sm font-bold text-slate-300',
+          (!hasMore && images.length > 0 && !isLoading) ? '' : 'hidden'
+        ]"
+      >
         - 到底了 -
       </div>
 
@@ -672,6 +780,7 @@ onMounted(() => {
       @update-sort="handleUpdateSort"
       @update-tag-range="handleUpdateTagRange"
       @update-temp-tags="handleUpdateTempTags"
+      @temp-input-update="handleTempInputUpdate"
     />
 
     <!-- 规则树面板 -->
@@ -686,7 +795,7 @@ onMounted(() => {
     <ToastContainer />
 
     <datalist id="tag-suggestions">
-      <option v-for="tag in allTags" :key="tag" :value="tag" />
+      <option v-for="tag in filteredTagSuggestions" :key="tag" :value="tag" />
     </datalist>
 
     <input

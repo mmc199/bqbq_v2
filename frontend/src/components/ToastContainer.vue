@@ -10,11 +10,9 @@ const { toasts } = useToast()
 function getBg(type: ToastMessage['type']) {
   switch (type) {
     case 'success':
-      return 'bg-emerald-500'
+      return 'bg-green-500'
     case 'error':
       return 'bg-red-500'
-    case 'warning':
-      return 'bg-amber-500'
     default:
       return 'bg-blue-500'
   }
@@ -23,20 +21,18 @@ function getBg(type: ToastMessage['type']) {
 
 <template>
   <Teleport to="body">
-    <div class="fixed bottom-8 right-8 z-50 flex flex-col gap-3">
-      <TransitionGroup name="toast">
-        <div
-          v-for="toast in toasts"
-          :key="toast.id"
-          :class="[
-            'px-4 py-3 rounded-xl shadow-2xl text-white font-bold transform transition-all duration-300',
-            getBg(toast.type)
-          ]"
-        >
-          {{ toast.message }}
-        </div>
-      </TransitionGroup>
-    </div>
+    <TransitionGroup name="toast" tag="div">
+      <div
+        v-for="toast in toasts"
+        :key="toast.id"
+        :class="[
+          'fixed bottom-8 right-8 p-4 rounded-xl shadow-2xl text-white font-bold z-50 transform transition-all duration-300',
+          getBg(toast.type)
+        ]"
+      >
+        {{ toast.message }}
+      </div>
+    </TransitionGroup>
   </Teleport>
 </template>
 

@@ -4,11 +4,11 @@
 import json
 import io
 from datetime import datetime
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Union
-from ..database import get_connection, get_rules_version, increment_rules_version
+from ..database import get_connection, get_rules_version, ensure_hierarchy_edges, rebuild_hierarchy_from_edges
 
 router = APIRouter()
 
@@ -51,7 +51,6 @@ async def check_md5_compat(data: CheckMD5Request):
 
             return {
                 "exists": True,
-                "id": row['id'],
                 "filename": row['filename'],
                 "time_refreshed": time_refreshed
             }
@@ -72,22 +71,10 @@ async def update_tags_compat(data: UpdateTagsRequest):
         if not row:
             raise HTTPException(status_code=404, detail="图片不存在")
 
-        if data.base_version is not None and data.client_id is not None:
-            current_version = get_rules_version()
-            if data.base_version != current_version:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"版本冲突: 期望 {data.base_version}, 当前 {current_version}"
-                )
-
         cursor.execute("UPDATE images SET tags = ? WHERE md5 = ?", (tags_str, data.md5))
-
-        new_version = increment_rules_version(
-            conn, data.client_id or "legacy", "update_tags", f"md5={data.md5}"
-        )
         conn.commit()
 
-        return {"success": True, "new_version": new_version}
+        return {"success": True}
 
 
 @router.get("/export")
@@ -97,10 +84,14 @@ async def export_data():
         cursor = conn.cursor()
 
         # 导出图片数据（转换为旧项目格式）
-        cursor.execute("SELECT * FROM images")
+        cursor.execute("""
+            SELECT i.*, f.tags as tags_text
+            FROM images i
+            LEFT JOIN images_fts f ON i.id = f.rowid
+        """)
         images_data = []
         for row in cursor.fetchall():
-            tags_text = row['tags'] if row['tags'] else ""
+            tags_text = row['tags_text'] if row['tags_text'] else ""
             tags = tags_text.split(' ') if tags_text else []
             images_data.append({
                 "md5": row['md5'],
@@ -113,19 +104,16 @@ async def export_data():
             })
 
         # 导出规则组（转换为旧项目格式）
-        cursor.execute("SELECT id as group_id, name as group_name, enabled as is_enabled FROM search_groups")
+        cursor.execute("SELECT id as group_id, name as group_name, COALESCE(enabled, 1) as is_enabled FROM search_groups")
         groups = [dict(row) for row in cursor.fetchall()]
 
         # 导出关键词（转换为旧项目格式）
-        cursor.execute("SELECT keyword, group_id, 1 as is_enabled FROM search_keywords")
+        cursor.execute("SELECT keyword, group_id, COALESCE(enabled, 1) as is_enabled FROM search_keywords")
         keywords = [dict(row) for row in cursor.fetchall()]
 
-        # 导出层级关系（转换为旧项目简单格式 parent_id/child_id）
-        cursor.execute("""
-            SELECT sg.parent_id, sg.id as child_id
-            FROM search_groups sg
-            WHERE sg.parent_id IS NOT NULL
-        """)
+        # 导出层级关系（旧项目边表 parent_id/child_id）
+        ensure_hierarchy_edges(conn)
+        cursor.execute("SELECT parent_id, child_id FROM search_hierarchy_edges")
         hierarchy = [dict(row) for row in cursor.fetchall()]
 
         # 导出标签字典
@@ -166,13 +154,8 @@ async def export_all_compat():
 
 
 @router.post("/import")
-async def import_data(file: UploadFile = File(...)):
+async def import_data(data: dict = Body(...)):
     """导入数据（兼容旧项目格式）"""
-    try:
-        content = await file.read()
-        data = json.loads(content.decode('utf-8'))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"无效的 JSON 文件: {e}")
 
     imported_counts = {
         "images": 0,
@@ -218,61 +201,66 @@ async def import_data(file: UploadFile = File(...)):
                     imported_counts["images"] += 1
 
             # 清空并重建规则树
+            ensure_hierarchy_edges(conn)
             cursor.execute("DELETE FROM search_keywords")
+            cursor.execute("DELETE FROM search_hierarchy_edges")
             cursor.execute("DELETE FROM search_hierarchy")
             cursor.execute("DELETE FROM search_groups")
 
             rules = data.get("rules", {})
             group_id_map = {}  # 旧 group_id -> 新 id
 
-            # 导入组
+            # 导入组（保留旧 group_id）
             for group in rules.get("groups", []):
                 old_id = group.get('group_id')
                 cursor.execute(
-                    "INSERT INTO search_groups (name, enabled) VALUES (?, ?)",
-                    (group.get('group_name', ''), group.get('is_enabled', 1))
+                    "INSERT INTO search_groups (id, name, enabled) VALUES (?, ?, ?)",
+                    (old_id, group.get('group_name', ''), group.get('is_enabled', 1))
                 )
-                new_id = cursor.lastrowid
-                group_id_map[old_id] = new_id
+                group_id_map[old_id] = old_id
                 imported_counts["groups"] += 1
-
-                # 自己到自己的层级关系
-                cursor.execute(
-                    "INSERT INTO search_hierarchy (ancestor_id, descendant_id, depth) VALUES (?, ?, 0)",
-                    (new_id, new_id)
-                )
 
             # 导入关键词
             for keyword in rules.get("keywords", []):
                 old_group_id = keyword.get('group_id')
                 new_group_id = group_id_map.get(old_group_id)
                 if new_group_id:
+                    is_enabled = keyword.get('is_enabled', 1)
                     cursor.execute(
-                        "INSERT INTO search_keywords (keyword, group_id) VALUES (?, ?)",
-                        (keyword.get('keyword', ''), new_group_id)
+                        "INSERT INTO search_keywords (keyword, group_id, enabled) VALUES (?, ?, ?)",
+                        (keyword.get('keyword', ''), new_group_id, 1 if is_enabled else 0)
                     )
                     imported_counts["keywords"] += 1
 
-            # 导入层级关系
+            # 导入层级关系（旧项目边表）
             for hier in rules.get("hierarchy", []):
                 old_parent_id = hier.get('parent_id')
                 old_child_id = hier.get('child_id')
                 new_parent_id = group_id_map.get(old_parent_id)
                 new_child_id = group_id_map.get(old_child_id)
 
-                if new_parent_id and new_child_id:
-                    # 更新 parent_id
+                if new_child_id is not None:
+                    if old_parent_id == 0:
+                        parent_value = 0
+                    else:
+                        if new_parent_id is None:
+                            continue
+                        parent_value = new_parent_id
                     cursor.execute(
-                        "UPDATE search_groups SET parent_id = ? WHERE id = ?",
-                        (new_parent_id, new_child_id)
+                        "INSERT OR IGNORE INTO search_hierarchy_edges (parent_id, child_id) VALUES (?, ?)",
+                        (parent_value, new_child_id)
                     )
-                    # 添加层级关系
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO search_hierarchy (ancestor_id, descendant_id, depth)
-                        SELECT ancestor_id, ?, depth + 1
-                        FROM search_hierarchy
-                        WHERE descendant_id = ?
-                    """, (new_child_id, new_parent_id))
+                    if parent_value != 0:
+                        cursor.execute(
+                            "SELECT parent_id FROM search_groups WHERE id = ?",
+                            (new_child_id,)
+                        )
+                        row = cursor.fetchone()
+                        if row and row['parent_id'] is None:
+                            cursor.execute(
+                                "UPDATE search_groups SET parent_id = ? WHERE id = ?",
+                                (parent_value, new_child_id)
+                            )
 
             # 重置版本号
             new_version = rules.get('version_id', 0)
@@ -281,8 +269,11 @@ async def import_data(file: UploadFile = File(...)):
                 (str(new_version),)
             )
 
+            rebuild_hierarchy_from_edges(conn)
+
         else:
             # 新项目格式导入（保持原有逻辑）
+            ensure_hierarchy_edges(conn)
             for img in data.get("images", []):
                 try:
                     cursor.execute(
@@ -310,6 +301,11 @@ async def import_data(file: UploadFile = File(...)):
                     )
                     group_id_map[old_id] = cursor.lastrowid
                     imported_counts["groups"] += 1
+                    if parent_id is not None:
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO search_hierarchy_edges (parent_id, child_id) VALUES (?, ?)",
+                            (parent_id, cursor.lastrowid)
+                        )
                 except Exception:
                     pass
 
@@ -319,13 +315,16 @@ async def import_data(file: UploadFile = File(...)):
                     if group_id in group_id_map:
                         group_id = group_id_map[group_id]
 
+                    enabled = kw.get('enabled', 1)
                     cursor.execute(
-                        "INSERT INTO search_keywords (keyword, group_id) VALUES (?, ?)",
-                        (kw['keyword'], group_id)
+                        "INSERT INTO search_keywords (keyword, group_id, enabled) VALUES (?, ?, ?)",
+                        (kw['keyword'], group_id, 1 if enabled else 0)
                     )
                     imported_counts["keywords"] += 1
                 except Exception:
                     pass
+
+            rebuild_hierarchy_from_edges(conn)
 
         conn.commit()
 
@@ -339,9 +338,9 @@ async def import_data(file: UploadFile = File(...)):
 
 
 @router.post("/import/all")
-async def import_all_compat(file: UploadFile = File(...)):
+async def import_all_compat(data: dict = Body(...)):
     """旧项目兼容：/api/import/all"""
-    return await import_data(file)
+    return await import_data(data)
 
 
 @router.get("/stats")

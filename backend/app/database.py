@@ -110,6 +110,15 @@ def init_database():
             )
         """)
 
+        # 层级关系边表（旧项目语义：支持多父关系）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS search_hierarchy_edges (
+                parent_id INTEGER NOT NULL,
+                child_id INTEGER NOT NULL,
+                PRIMARY KEY (parent_id, child_id)
+            )
+        """)
+
         # 标签字典表（统计标签使用次数，用于建议排序）
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tags_dict (
@@ -143,6 +152,7 @@ def init_database():
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_keywords_group ON search_keywords(group_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_hierarchy_ancestor ON search_hierarchy(ancestor_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_hierarchy_descendant ON search_hierarchy(descendant_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_hierarchy_edges_child ON search_hierarchy_edges(child_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_created ON images(created_at DESC)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_size ON images(file_size DESC)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_resolution ON images(height DESC, width DESC)")
@@ -241,7 +251,7 @@ def rebuild_tags_dict():
         cursor.execute("DELETE FROM tags_dict")
 
         # 2. 获取所有图片的标签
-        cursor.execute("SELECT tags FROM images WHERE tags IS NOT NULL AND tags != ''")
+        cursor.execute("SELECT tags FROM images_fts WHERE tags IS NOT NULL AND tags != ''")
         rows = cursor.fetchall()
 
         # 3. 统计每个标签的使用次数
@@ -263,3 +273,72 @@ def rebuild_tags_dict():
         conn.commit()
 
     print(f"[Tags Dict] Rebuilt with {len(tag_counts)} unique tags.")
+
+
+def ensure_hierarchy_edges(conn: sqlite3.Connection) -> None:
+    """确保旧项目层级边表存在并用现有 parent_id 补齐一次"""
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT COUNT(*) as cnt FROM search_hierarchy_edges")
+    except sqlite3.OperationalError:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS search_hierarchy_edges (
+                parent_id INTEGER NOT NULL,
+                child_id INTEGER NOT NULL,
+                PRIMARY KEY (parent_id, child_id)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_hierarchy_edges_child ON search_hierarchy_edges(child_id)")
+        cursor.execute("SELECT COUNT(*) as cnt FROM search_hierarchy_edges")
+
+    cnt = cursor.fetchone()['cnt']
+    if cnt == 0:
+        cursor.execute("SELECT id, parent_id FROM search_groups WHERE parent_id IS NOT NULL")
+        rows = cursor.fetchall()
+        if rows:
+            cursor.executemany(
+                "INSERT OR IGNORE INTO search_hierarchy_edges (parent_id, child_id) VALUES (?, ?)",
+                [(row['parent_id'], row['id']) for row in rows if row['parent_id'] is not None]
+            )
+    conn.commit()
+
+
+def rebuild_hierarchy_from_edges(conn: sqlite3.Connection) -> None:
+    """基于 search_hierarchy_edges 重建闭包表 search_hierarchy"""
+    cursor = conn.cursor()
+    ensure_hierarchy_edges(conn)
+
+    cursor.execute("DELETE FROM search_hierarchy")
+    cursor.execute("SELECT id FROM search_groups")
+    ids = [row['id'] for row in cursor.fetchall()]
+    if ids:
+        cursor.executemany(
+            "INSERT OR IGNORE INTO search_hierarchy (ancestor_id, descendant_id, depth) VALUES (?, ?, 0)",
+            [(gid, gid) for gid in ids]
+        )
+
+    cursor.execute("SELECT parent_id, child_id FROM search_hierarchy_edges WHERE parent_id != 0")
+    edges = cursor.fetchall()
+    if edges:
+        cursor.executemany(
+            "INSERT OR IGNORE INTO search_hierarchy (ancestor_id, descendant_id, depth) VALUES (?, ?, 1)",
+            [(row['parent_id'], row['child_id']) for row in edges]
+        )
+
+        cursor.execute("""
+            WITH RECURSIVE rel(ancestor_id, descendant_id, depth, path) AS (
+                SELECT parent_id, child_id, 1, printf('%d,%d', parent_id, child_id)
+                FROM search_hierarchy_edges
+                WHERE parent_id != 0
+                UNION ALL
+                SELECT r.ancestor_id, e.child_id, r.depth + 1, r.path || ',' || e.child_id
+                FROM rel r
+                JOIN search_hierarchy_edges e ON r.descendant_id = e.parent_id
+                WHERE e.parent_id != 0
+                  AND instr(r.path, printf(',%d', e.child_id)) = 0
+            )
+            INSERT OR IGNORE INTO search_hierarchy (ancestor_id, descendant_id, depth)
+            SELECT ancestor_id, descendant_id, depth FROM rel
+        """)
+
+    conn.commit()
