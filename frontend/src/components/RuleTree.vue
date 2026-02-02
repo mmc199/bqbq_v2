@@ -217,7 +217,7 @@ function detectCycles(nodes: RuleGroup[]): { conflictNodes: RuleGroup[], conflic
   buildMap(nodes)
 
   const visit = (node: RuleGroup, ancestors: number[]) => {
-    const parentId = ancestors.length > 0 ? ancestors[ancestors.length - 1] : null
+    const parentId = ancestors.length > 0 ? ancestors[ancestors.length - 1]! : null
 
     if (parentId !== null) {
       const parents = parentMap.get(node.id) ?? new Set<number>()
@@ -1407,11 +1407,6 @@ function initRulesTreeScrollSync() {
     cleanupV()
     cleanupH()
   }
-}
-
-// 关闭面板
-function close() {
-  emit('close')
 }
 
 function clearTreeSearch() {
