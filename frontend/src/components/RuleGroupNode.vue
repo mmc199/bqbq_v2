@@ -3,7 +3,7 @@
  * RuleGroupNode 组件 - 规则组节点（递归）
  * 结构/类名对齐旧项目 DOM
  */
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { Folder, FolderX, AlertTriangle, ChevronDown, FolderPlus, Plus, Trash2, Eye, EyeOff } from 'lucide-vue-next'
 import type { RuleGroup, RuleKeyword } from '@/types'
 import { useToast } from '@/composables/useToast'
@@ -21,7 +21,7 @@ const props = defineProps<{
   selectedGroupIds?: Set<number>
   searchText?: string
   dragOverGapKey?: string | null
-  touchDropTargetId?: number | null
+  dropTargetGroupId?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -44,15 +44,17 @@ const emit = defineEmits<{
   'dropOnGap': [event: DragEvent, parentId: number]
   'gapDragOver': [event: DragEvent, gapKey: string]
   'gapDragLeave': [event: DragEvent]
+  'groupDragOver': [groupId: number]
+  'groupDragLeave': [groupId: number]
   'renameGroup': [groupId: number, name: string]
 }>()
 
 const toast = useToast()
 
+const groupNodeRef = ref<HTMLElement | null>(null)
 const isEditingName = ref(false)
 const editingName = ref('')
 const editInputRef = ref<HTMLInputElement | null>(null)
-const isDragOver = ref(false)
 const ignoreBlur = ref(false)
 
 const isExpanded = computed(() => props.expandedIds.has(props.group.id))
@@ -67,7 +69,7 @@ const isDragging = computed(() => {
 const isValidDropTarget = computed(() => {
   return !!props.draggingId
 })
-const isTouchDropTarget = computed(() => props.touchDropTargetId === props.group.id)
+const isDropTarget = computed(() => props.dropTargetGroupId === props.group.id)
 const isSelected = computed(() => props.selectedGroupIds?.has(props.group.id) ?? false)
 const isDisabled = computed(() => !props.group.enabled)
 const isMatch = computed(() => props.group.isMatch ?? false)
@@ -155,6 +157,13 @@ function handleDragStart(e: DragEvent) {
       ? Array.from(props.selectedGroupIds ?? [])
       : [props.group.id]
     e.dataTransfer.setData('text/plain', JSON.stringify(dragIds))
+    const dragImage = groupNodeRef.value
+    if (dragImage) {
+      const rect = dragImage.getBoundingClientRect()
+      const offsetX = Math.min(28, rect.width / 2)
+      const offsetY = Math.min(16, rect.height / 2)
+      e.dataTransfer.setDragImage(dragImage, offsetX, offsetY)
+    }
   }
   emit('dragStart', props.group.id)
 }
@@ -171,7 +180,7 @@ function handleDragOver(e: DragEvent) {
   if (e.dataTransfer) {
     e.dataTransfer.dropEffect = 'move'
   }
-  isDragOver.value = true
+  emit('groupDragOver', props.group.id)
 }
 
 function handleDragLeave(e: DragEvent) {
@@ -181,13 +190,12 @@ function handleDragLeave(e: DragEvent) {
   if (current && related && current.contains(related)) {
     return
   }
-  isDragOver.value = false
+  emit('groupDragLeave', props.group.id)
 }
 
 function handleDrop(e: DragEvent) {
   e.preventDefault()
   e.stopPropagation()
-  isDragOver.value = false
   if (isValidDropTarget.value) {
     emit('dropOnGroup', props.group.id)
   }
@@ -211,19 +219,15 @@ function handleGapDrop(e: DragEvent) {
   emit('dropOnGap', e, props.group.id)
 }
 
-watch(() => props.draggingId, (val) => {
-  if (!val) {
-    isDragOver.value = false
-  }
-})
 </script>
 
 <template>
   <div
+    ref="groupNodeRef"
     class="group-node group relative"
     :class="[
       isDragging ? 'dragging' : '',
-      (isDragOver && isValidDropTarget) || isTouchDropTarget ? 'drop-target-child' : '',
+      isValidDropTarget && isDropTarget ? 'drop-target-child' : '',
       isConflict ? 'border-2 border-red-400 bg-red-50' : '',
       batchEditMode && isSelected ? 'ring-2 ring-blue-500 bg-blue-50' : '',
       isMatch ? 'bg-blue-50 border-blue-400' : '',
@@ -406,7 +410,7 @@ watch(() => props.draggingId, (val) => {
           :selected-group-ids="selectedGroupIds"
           :search-text="searchText"
           :drag-over-gap-key="dragOverGapKey"
-          :touch-drop-target-id="touchDropTargetId"
+          :drop-target-group-id="dropTargetGroupId"
           @toggle-expand="emit('toggleExpand', $event)"
           @start-add-group="emit('startAddGroup', $event)"
           @start-add-keyword="emit('startAddKeyword', $event)"
@@ -426,6 +430,8 @@ watch(() => props.draggingId, (val) => {
           @drop-on-gap="(e, parentId) => emit('dropOnGap', e, parentId)"
           @gap-drag-over="(e, gapKey) => emit('gapDragOver', e, gapKey)"
           @gap-drag-leave="(e) => emit('gapDragLeave', e)"
+          @group-drag-over="(groupId) => emit('groupDragOver', groupId)"
+          @group-drag-leave="(groupId) => emit('groupDragLeave', groupId)"
           @rename-group="(groupId, name) => emit('renameGroup', groupId, name)"
         />
       </template>

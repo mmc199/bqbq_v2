@@ -273,6 +273,16 @@ display: block;
     font-weight: 500;
 }
 
+.root-drop-zone-float {
+    position: absolute;
+    left: 6px;
+    top: 8px;
+    width: 92px;
+    margin-bottom: 0;
+    z-index: 5;
+    box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
+}
+
 .root-drop-zone:hover {
     border-color: #9ca3af;
     background-color: #f3f4f6;
@@ -290,6 +300,25 @@ display: block;
 /* 隐藏时的根目录放置区 */
 .root-drop-zone.hidden {
     display: none;
+}
+
+.drag-preview {
+    position: fixed;
+    left: 0;
+    top: 0;
+    max-width: 220px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.92);
+    color: #f8fafc;
+    font-size: 12px;
+    font-weight: 600;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.25);
+    pointer-events: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    z-index: 60;
 }
 
 /* 拖拽中的组节点样式 */
@@ -392,6 +421,18 @@ display: block;
 /* 拖拽时禁止文本选择 */
 .is-dragging * {
     user-select: none !important;
+}
+
+.is-dragging #rules-tree-content,
+.is-dragging #rules-tree-container {
+    touch-action: none;
+    overscroll-behavior: contain;
+}
+
+.is-dragging .custom-scrollbar-v,
+.is-dragging .custom-scrollbar-h,
+.is-dragging .scrollbar-thumb {
+    pointer-events: none;
 }
 
 /* 拖拽时选中的组保持高亮 */

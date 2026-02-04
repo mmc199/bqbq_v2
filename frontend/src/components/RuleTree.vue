@@ -55,15 +55,19 @@ const draggingId = ref<number | null>(null)
 const rootDropZoneActive = ref(false)
 const dragOverGapKey = ref<string | null>(null)
 const isHandlingHierarchyChange = ref(false)
-const touchDropTargetId = ref<number | null>(null)
+const dropTargetGroupId = ref<number | null>(null)
 const touchDragPointerId = ref<number | null>(null)
 const touchDragActive = ref(false)
 const touchDragMoved = ref(false)
 const touchDragStartX = ref(0)
 const touchDragStartY = ref(0)
+const touchDragLastX = ref(0)
+const touchDragLastY = ref(0)
 const touchDragTimer = ref<number | null>(null)
 const touchDragJustEnded = ref(false)
 const touchDragSourceEl = ref<HTMLElement | null>(null)
+let dragPreviewEl: HTMLDivElement | null = null
+let lockedOverflowStyle: string | null = null
 let touchListenersAttached = false
 
 // 自定义滚动条 refs
@@ -816,10 +820,77 @@ async function toggleKeywordEnabled() {
   return
 }
 
-// 拖拽事件处理
-function handleDragStart(groupId: number) {
+function ensureDragPreviewEl() {
+  if (dragPreviewEl) return dragPreviewEl
+  const el = document.createElement('div')
+  el.className = 'drag-preview'
+  el.style.display = 'none'
+  el.style.transform = 'translate(-9999px, -9999px)'
+  document.body.appendChild(el)
+  dragPreviewEl = el
+  return el
+}
+
+function updateDragPreviewContent(groupId: number) {
+  const group = findGroupById(groups.value, groupId)
+  const name = group?.name?.trim() || `[空名组 #${groupId}]`
+  const el = ensureDragPreviewEl()
+  const selectedCount = (batchEditMode.value && selectedGroupIds.value.size > 0 && selectedGroupIds.value.has(groupId))
+    ? selectedGroupIds.value.size
+    : 1
+  el.textContent = selectedCount > 1 ? `${name} 等 ${selectedCount} 个` : name
+}
+
+function updateDragPreviewPosition(x: number, y: number) {
+  if (!dragPreviewEl) return
+  dragPreviewEl.style.transform = `translate(${x + 12}px, ${y + 12}px)`
+}
+
+function showDragPreview(groupId: number, x: number, y: number) {
+  updateDragPreviewContent(groupId)
+  const el = ensureDragPreviewEl()
+  el.style.display = 'block'
+  updateDragPreviewPosition(x, y)
+}
+
+function hideDragPreview() {
+  if (!dragPreviewEl) return
+  dragPreviewEl.style.display = 'none'
+  dragPreviewEl.style.transform = 'translate(-9999px, -9999px)'
+}
+
+function setTreeScrollLocked(locked: boolean) {
+  const content = scrollContentRef.value
+  if (!content) return
+  if (locked) {
+    if (lockedOverflowStyle === null) {
+      lockedOverflowStyle = content.style.overflow
+    }
+    content.style.overflow = 'hidden'
+    return
+  }
+  if (lockedOverflowStyle !== null) {
+    content.style.overflow = lockedOverflowStyle
+    lockedOverflowStyle = null
+  }
+}
+
+function startDragSession(groupId: number) {
   draggingId.value = groupId
   document.body.classList.add('is-dragging')
+  setTreeScrollLocked(true)
+}
+
+function stopDragSession() {
+  draggingId.value = null
+  document.body.classList.remove('is-dragging')
+  hideDragPreview()
+  setTreeScrollLocked(false)
+}
+
+// 拖拽事件处理
+function handleDragStart(groupId: number) {
+  startDragSession(groupId)
 }
 
 function handleDragEnd() {
@@ -956,18 +1027,33 @@ async function handleHierarchyMove(targetParentId: number | null, dragIds: numbe
   }
 }
 
-async function handleDropOnGroup(targetGroupId: number) {
-  if (!draggingId.value) return
+async function performDrop(target: DropTarget) {
+  if (!draggingId.value) return false
   const dragIds = getDragIds()
-  await handleHierarchyMove(targetGroupId, dragIds)
+  if (target.type === 'root') {
+    await handleHierarchyMove(null, dragIds)
+    return true
+  }
+  if (target.type === 'gap') {
+    const parentId = target.parentId === 0 ? null : target.parentId
+    await handleHierarchyMove(parentId, dragIds)
+    return true
+  }
+  if (target.type === 'group') {
+    await handleHierarchyMove(target.groupId, dragIds)
+    return true
+  }
+  return false
+}
+
+async function handleDropOnGroup(targetGroupId: number) {
+  await performDrop({ type: 'group', groupId: targetGroupId })
 }
 
 async function handleDropOnRoot(e: DragEvent) {
   e.preventDefault()
   e.stopPropagation()
-  if (!draggingId.value) return
-  const dragIds = getDragIds()
-  await handleHierarchyMove(null, dragIds)
+  await performDrop({ type: 'root' })
 }
 
 function handleRootDragOver(e: DragEvent) {
@@ -986,9 +1072,8 @@ function handleRootDragLeave(e: DragEvent) {
 }
 
 function clearDragState() {
-  draggingId.value = null
   applyDropHighlight({ type: 'none' })
-  document.body.classList.remove('is-dragging')
+  stopDragSession()
 }
 
 function handleGapDragOver(e: DragEvent, gapKey: string) {
@@ -1010,14 +1095,21 @@ async function handleGapDrop(e: DragEvent, parentId: number) {
   e.preventDefault()
   e.stopPropagation()
   dragOverGapKey.value = null
-  if (!draggingId.value) return
-
-  const targetParentId = parentId === 0 ? null : parentId
-  const dragIds = getDragIds()
-  await handleHierarchyMove(targetParentId, dragIds)
+  await performDrop({ type: 'gap', parentId, gapKey: `gap-${parentId}` })
 }
 
-type TouchDropTarget =
+function handleGroupDragOver(targetGroupId: number) {
+  if (!draggingId.value) return
+  applyDropHighlight({ type: 'group', groupId: targetGroupId })
+}
+
+function handleGroupDragLeave(targetGroupId: number) {
+  if (dropTargetGroupId.value === targetGroupId) {
+    dropTargetGroupId.value = null
+  }
+}
+
+type DropTarget =
   | { type: 'root' }
   | { type: 'gap'; parentId: number; gapKey: string }
   | { type: 'group'; groupId: number }
@@ -1033,27 +1125,24 @@ function clearTouchDragTimer() {
   }
 }
 
-function resetTouchDragState(clearDrag = false) {
+function resetTouchDragState() {
   clearTouchDragTimer()
   touchDragPointerId.value = null
   touchDragActive.value = false
   touchDragMoved.value = false
   touchDragSourceEl.value = null
-  touchDropTargetId.value = null
-  if (clearDrag) {
-    applyDropHighlight({ type: 'none' })
-  }
+  hideDragPreview()
 }
 
 function shouldIgnoreTouchTarget(target: HTMLElement) {
-  if (target.closest('button, input, textarea, select, [contenteditable="true"]')) return true
-  if (target.closest('.rule-action-btn, .batch-checkbox-wrapper, .batch-checkbox, .group-editor-wrapper, .keyword-add-input-wrapper')) {
-    return true
-  }
+  if (target.closest('input, textarea, select, [contenteditable="true"]')) return true
+  if (target.closest('.group-editor-wrapper, .keyword-add-input-wrapper')) return true
+  const inHeader = !!target.closest('.group-header')
+  if (!inHeader && target.closest('button')) return true
   return false
 }
 
-function resolveTouchDropTarget(x: number, y: number): TouchDropTarget {
+function resolveDropTargetFromPoint(x: number, y: number): DropTarget {
   const el = document.elementFromPoint(x, y) as HTMLElement | null
   if (!el) return { type: 'none' }
 
@@ -1081,36 +1170,37 @@ function resolveTouchDropTarget(x: number, y: number): TouchDropTarget {
   return { type: 'none' }
 }
 
-function applyDropHighlight(target: TouchDropTarget) {
+function applyDropHighlight(target: DropTarget) {
   if (target.type === 'root') {
     rootDropZoneActive.value = true
     dragOverGapKey.value = null
-    touchDropTargetId.value = null
+    dropTargetGroupId.value = null
     return
   }
   if (target.type === 'gap') {
     rootDropZoneActive.value = false
     dragOverGapKey.value = target.gapKey
-    touchDropTargetId.value = null
+    dropTargetGroupId.value = null
     return
   }
   if (target.type === 'group') {
     rootDropZoneActive.value = false
     dragOverGapKey.value = null
-    touchDropTargetId.value = target.groupId
+    dropTargetGroupId.value = target.groupId
     return
   }
   rootDropZoneActive.value = false
   dragOverGapKey.value = null
-  touchDropTargetId.value = null
+  dropTargetGroupId.value = null
 }
 
-function startTouchDrag(groupId: number, pointerId: number, sourceEl: HTMLElement) {
+function startTouchDrag(groupId: number, pointerId: number, sourceEl: HTMLElement, x: number, y: number) {
   touchDragActive.value = true
   touchDragPointerId.value = pointerId
   touchDragMoved.value = false
-  draggingId.value = groupId
-  document.body.classList.add('is-dragging')
+  touchDragJustEnded.value = false
+  startDragSession(groupId)
+  showDragPreview(groupId, x, y)
   try {
     sourceEl.setPointerCapture(pointerId)
   } catch {
@@ -1151,10 +1241,13 @@ function handleTouchPointerDown(e: PointerEvent) {
   touchDragPointerId.value = e.pointerId
   touchDragStartX.value = e.clientX
   touchDragStartY.value = e.clientY
+  touchDragLastX.value = e.clientX
+  touchDragLastY.value = e.clientY
 
   touchDragTimer.value = window.setTimeout(() => {
-    startTouchDrag(groupId, e.pointerId, groupEl)
-    applyDropHighlight(resolveTouchDropTarget(e.clientX, e.clientY))
+    startTouchDrag(groupId, e.pointerId, groupEl, touchDragLastX.value, touchDragLastY.value)
+    applyDropHighlight(resolveDropTargetFromPoint(touchDragLastX.value, touchDragLastY.value))
+    touchDragTimer.value = null
   }, TOUCH_LONG_PRESS_MS)
 
   attachTouchListeners()
@@ -1163,6 +1256,9 @@ function handleTouchPointerDown(e: PointerEvent) {
 function handleTouchPointerMove(e: PointerEvent) {
   if (e.pointerType !== 'touch') return
   if (touchDragPointerId.value !== null && e.pointerId !== touchDragPointerId.value) return
+
+  touchDragLastX.value = e.clientX
+  touchDragLastY.value = e.clientY
 
   const dx = e.clientX - touchDragStartX.value
   const dy = e.clientY - touchDragStartY.value
@@ -1180,7 +1276,8 @@ function handleTouchPointerMove(e: PointerEvent) {
   if (moved > 1) {
     touchDragMoved.value = true
   }
-  applyDropHighlight(resolveTouchDropTarget(e.clientX, e.clientY))
+  applyDropHighlight(resolveDropTargetFromPoint(e.clientX, e.clientY))
+  updateDragPreviewPosition(e.clientX, e.clientY)
 }
 
 async function handleTouchPointerUp(e: PointerEvent) {
@@ -1200,12 +1297,11 @@ async function handleTouchPointerUp(e: PointerEvent) {
     // ignore pointer capture failures
   }
 
-  const target = resolveTouchDropTarget(e.clientX, e.clientY)
-  const dragIds = getDragIds()
+  const target = resolveDropTargetFromPoint(e.clientX, e.clientY)
   const currentDragId = draggingId.value
 
   if (!touchDragMoved.value && target.type === 'group' && currentDragId && target.groupId === currentDragId) {
-    resetTouchDragState(true)
+    resetTouchDragState()
     clearDragState()
     touchDragJustEnded.value = true
     window.setTimeout(() => {
@@ -1215,17 +1311,12 @@ async function handleTouchPointerUp(e: PointerEvent) {
     return
   }
 
-  if (target.type === 'root') {
-    await handleHierarchyMove(null, dragIds)
-  } else if (target.type === 'gap') {
-    const parentId = target.parentId === 0 ? null : target.parentId
-    await handleHierarchyMove(parentId, dragIds)
-  } else if (target.type === 'group') {
-    await handleHierarchyMove(target.groupId, dragIds)
-  }
+  const didDrop = await performDrop(target)
 
-  resetTouchDragState(true)
-  clearDragState()
+  resetTouchDragState()
+  if (!didDrop) {
+    clearDragState()
+  }
   touchDragJustEnded.value = true
   window.setTimeout(() => {
     touchDragJustEnded.value = false
@@ -1241,7 +1332,7 @@ function handleTouchPointerCancel(e: PointerEvent) {
   } catch {
     // ignore pointer capture failures
   }
-  resetTouchDragState(true)
+  resetTouchDragState()
   clearDragState()
   detachTouchListeners()
 }
@@ -1474,7 +1565,11 @@ onBeforeUnmount(() => {
     container.removeEventListener('click', handleTouchClickCapture, true)
   }
   detachTouchListeners()
-  document.body.classList.remove('is-dragging')
+  stopDragSession()
+  if (dragPreviewEl && dragPreviewEl.parentNode) {
+    dragPreviewEl.parentNode.removeChild(dragPreviewEl)
+    dragPreviewEl = null
+  }
 })
 
 </script>
@@ -1561,24 +1656,23 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div id="rules-tree-scroll-wrapper" class="flex-1 min-h-0 -ml-5 -mr-2 -mb-2 border-t border-slate-200 bg-slate-50/30">
+        <div id="rules-tree-scroll-wrapper" class="flex-1 min-h-0 -ml-5 -mr-2 -mb-2 border-t border-slate-200 bg-slate-50/30 relative">
+          <div
+            v-if="filteredGroups.length > 0"
+            :class="['root-drop-zone root-drop-zone-float', rootDropZoneActive ? 'drag-over' : '', draggingId ? '' : 'hidden']"
+            data-drop-root="1"
+            @dragover="handleRootDragOver"
+            @dragleave="handleRootDragLeave"
+            @drop="handleDropOnRoot"
+          >
+            <span class="text-xs">📁 移至根目录</span>
+          </div>
           <div
             id="rules-tree-content"
             ref="scrollContentRef"
             class="h-full overflow-auto"
           >
             <div id="rules-tree-container" ref="treeContainerRef" class="space-y-2 p-3">
-              <div
-                v-if="filteredGroups.length > 0"
-                :class="['root-drop-zone', rootDropZoneActive ? 'drag-over' : '', draggingId ? '' : 'hidden']"
-                data-drop-root="1"
-                @dragover="handleRootDragOver"
-                @dragleave="handleRootDragLeave"
-                @drop="handleDropOnRoot"
-              >
-                <span class="text-xs">📁 移至根目录</span>
-              </div>
-
               <div v-if="showRootInput" class="new-group-editor mb-2 p-2 bg-white border border-blue-300 rounded-lg shadow-md flex flex-col gap-2">
                 <input
                   v-model="newGroupName"
@@ -1625,7 +1719,7 @@ onBeforeUnmount(() => {
                   :selected-group-ids="selectedGroupIds"
                   :search-text="searchText"
                   :drag-over-gap-key="dragOverGapKey"
-                  :touch-drop-target-id="touchDropTargetId"
+                  :drop-target-group-id="dropTargetGroupId"
                   @toggle-expand="toggleExpand"
                   @start-add-group="startAddGroup"
                   @start-add-keyword="startAddKeyword"
@@ -1645,6 +1739,8 @@ onBeforeUnmount(() => {
                   @drop-on-gap="handleGapDrop"
                   @gap-drag-over="handleGapDragOver"
                   @gap-drag-leave="handleGapDragLeave"
+                  @group-drag-over="handleGroupDragOver"
+                  @group-drag-leave="handleGroupDragLeave"
                   @rename-group="handleRenameGroup"
                 />
               </template>
