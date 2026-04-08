@@ -31,7 +31,6 @@ const editTags = ref<string[]>([])
 const editInputValue = ref('')
 const tagInputRef = ref<InstanceType<typeof TagInput> | null>(null)
 const editorRef = ref<HTMLElement | null>(null)
-const cardRef = ref<HTMLElement | null>(null)
 const copySuccess = ref(false)
 let copyResetTimer: number | null = null
 
@@ -213,7 +212,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    ref="cardRef"
     :class="[
       'meme-card group relative rounded-xl overflow-hidden aspect-square bg-slate-200 shadow-sm hover:shadow-lg',
       isTrashImage ? 'is-trash' : '',
