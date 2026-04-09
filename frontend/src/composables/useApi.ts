@@ -14,7 +14,9 @@ import type {
   RuleKeyword,
 } from '@/types'
 
-const API_BASE = '/api'
+// 加上 /g2 前缀，确保请求发往 https://bqbq.mmc199.com/g2/api
+// 从而避开 Nginx 默认对根路径 /api 的拦截（那个拦截会导致 401）
+const API_BASE = '/g2/api'
 
 // 冲突响应类型（与旧项目保持一致）
 export interface ConflictResponse {
