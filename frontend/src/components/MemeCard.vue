@@ -382,6 +382,23 @@ function loadOriginalImage() {
   // 预加载原图；若 CDN 拿不到（R2 尚未同步），自动改用本地后端地址
   const tryLoad = (url: string, isFallback: boolean) => {
     const tempImg = new Image()
+
+    /**
+     * 【关键】这个预加载器也必须带 crossOrigin，且规则与模板里的 <img> 完全一致
+     * （见 imgCrossOrigin）。
+     *
+     * 它加载的 URL 会被浏览器写进缓存。如果这里不带 crossOrigin：
+     *   · 请求不带 Origin 头 -> CDN 返回"无 CORS 头"的响应
+     *   · 缓存里存下的是这份"无 CORS"条目
+     *   · 之后点下载用 fetch(mode:'cors') 时匹配不到该条目 -> 报 CORS 错并重下一次
+     * 即：从缩略图点开原图这一步会把缓存"污染"成 fetch 不可用的形态。
+     *
+     * 带上 crossOrigin 后，预加载写下的就是带 CORS 头的条目，下载可直接复用。
+     */
+    if (isCdnUrl(url)) {
+      tempImg.crossOrigin = 'anonymous'
+    }
+
     tempImg.onload = () => {
       if (isFallback) cdnFailedImage.value = true
       currentSrcType.value = 'original'
