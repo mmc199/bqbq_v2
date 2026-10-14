@@ -1,11 +1,13 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 /**
  * MemeCard 组件 - 图片卡片
  * 复刻旧项目：覆盖层标签编辑、复制标签、回收站软删除、原图加载
  */
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
-import { Download, Trash2, RefreshCw, Check } from 'lucide-vue-next'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { Download, Trash2, RefreshCw, Check, Loader2 } from 'lucide-vue-next'
 import TagInput from '@/components/TagInput.vue'
+import { imageUrl, thumbnailUrl, downloadName, localImageUrl, localThumbnailUrl, isCdnUrl } from '@/composables/useImageUrl'
+import { getThumbBlobUrl, isBatchPending, onBatchSettled } from '@/composables/useThumbBatch'
 import type { MemeImage } from '@/types'
 
 const props = defineProps<{
@@ -34,13 +36,104 @@ const editorRef = ref<HTMLElement | null>(null)
 const copySuccess = ref(false)
 let copyResetTimer: number | null = null
 
+/**
+ * 顶部工具栏显隐。
+ *
+ * 【为什么不能只用 group-hover】触屏没有 hover：CSS :hover 在手机上要么不成立，
+ * 要么要等 touchend 之后才"粘"一下，工具栏于是完全点不出来，下载/复制/删除
+ * 三个功能在移动端等于不存在。
+ *
+ * 【为什么由点击切换而不是长按】长按要用户等，且各家触屏浏览器的长按规则
+ * 并不统一（部分会被文本选择菜单抢走）。点击是零等待、且已经在用的手势。
+ *
+ * 【为什么不会和"看图"冲突】卡片上原本单击 img 就是 loadOriginalImage()，
+ * 现在只是"顺带"把工具栏切出来，不新增手势、不改变原有语义。
+ */
+const toolbarVisible = ref(false)
+
 const EAGER_LOAD_COUNT = 4
 
-const imageSrc = computed(() => `/images/${props.image.filename}`)
-const thumbnailSrc = computed(() => `/thumbnails/${props.image.filename}`)
+const imageSrc = computed(() => imageUrl(props.image.filename))
+const thumbnailSrc = computed(() => thumbnailUrl(props.image.filename))
 
+/**
+ * CDN 失败后回退到本地后端。
+ *
+ * 【为什么需要】CDN 背后是 R2，而后端同步新图是**异步**的：
+ *   · 正常情况有 1-2 秒的「已入库但 R2 还没有」窗口
+ *   · 同步失败时这个窗口会一直存在
+ * 此时 CDN 返回 404。若不做回退，用户看到的是空白卡片。
+ *
+ * 【行为】CDN 地址加载失败 -> 自动换成后端 /images 或 /thumbnails 再试一次。
+ * 本地也失败才真正标记为错误（显示重试图标）。
+ */
+const cdnFailedImage = ref(false)
+const cdnFailedThumb = ref(false)
+
+/**
+ * 缩略图地址。
+ *
+ * 【关键】不能一查不到 blob 就回退到单图 URL。
+ * 批量请求需要时间（真实链路约 2-3 秒），如果卡片在等待期间就渲染了
+ * 单图 URL，浏览器会立刻并发发出 N 个请求 —— 等 batch 返回时早已晚了，
+ * batch 的意义被完全抵消。
+ *
+ * 正确行为：
+ *   · batch 进行中（isBatchPending）  -> src 留空，只显示占位，不发任何请求
+ *   · batch 已结束且命中 blob        -> 用 blob URL
+ *   · batch 已结束但没命中（失败/不在本批）-> 才回退到单图 URL
+ */
+const batchedThumbUrl = ref<string | null>(getThumbBlobUrl(props.image.md5))
+/** 批量是否已结束（结束后才允许回退到单图 URL） */
+const batchSettled = ref(!isBatchPending())
+
+/** 原图地址：CDN 失败后回退本地 */
+const imageSrcFinal = computed(() =>
+  cdnFailedImage.value ? localImageUrl(props.image.filename) : imageSrc.value
+)
+
+/** 缩略图地址：CDN 失败后回退本地 */
+const thumbnailSrcFinal = computed(() =>
+  cdnFailedThumb.value ? localThumbnailUrl(props.image.filename) : thumbnailSrc.value
+)
+
+/** 最终用于 <img src> 的值；批量等待期间为 null，表示「先不加载」 */
+const resolvedThumbSrc = computed(() => {
+  if (batchedThumbUrl.value) return batchedThumbUrl.value
+  // 批量还在跑：先占位，避免发出单图请求
+  if (!batchSettled.value) return null
+  // 批量已结束仍未命中 -> 回退
+  return thumbnailSrcFinal.value
+})
+
+// 卡片挂载后：订阅批量事件，而不是轮询。
+// 轮询在「批量整整 2-3 秒」的场景下既浪费又可能错过时机。
+let unsubscribeSettled: (() => void) | null = null
+
+function refreshFromBatch() {
+  const u = getThumbBlobUrl(props.image.md5)
+  if (u && u !== batchedThumbUrl.value) batchedThumbUrl.value = u
+  const settled = !isBatchPending()
+  if (settled !== batchSettled.value) batchSettled.value = settled
+}
+
+onMounted(() => {
+  refreshFromBatch()
+  // 批量全部结束时通知一次（此时决定是命中还是回退）
+  unsubscribeSettled = onBatchSettled(refreshFromBatch)
+})
+
+onBeforeUnmount(() => {
+  if (unsubscribeSettled) {
+    unsubscribeSettled()
+    unsubscribeSettled = null
+  }
+})
+
+
+/** 最终 src；为 null 时表示「暂不加载」（批量等待中） */
 const currentSrc = computed(() => {
-  return currentSrcType.value === 'original' ? imageSrc.value : thumbnailSrc.value
+  return currentSrcType.value === 'original' ? imageSrcFinal.value : resolvedThumbSrc.value
 })
 
 const loadingStrategy = computed(() => {
@@ -57,7 +150,10 @@ const isTempMode = computed(() => !!props.tempMode)
 const isTrashImage = computed(() => tags.value.includes('trash_bin'))
 
 const extLabel = computed(() => {
-  const parts = props.image.filename.split('.')
+  // filename 现在是分片相对路径（如 "00/be/00be....jpg"），
+  // 所以先取文件名部分再取扩展名。
+  const baseName = props.image.filename.split('/').pop() || ''
+  const parts = baseName.split('.')
   const ext = parts.length > 1 ? parts[parts.length - 1] : ''
   return ext ? ext.toUpperCase() : ''
 })
@@ -79,6 +175,9 @@ watch(() => props.preferHQ, (newVal) => {
 })
 
 function handleImageClick() {
+  // 每次点击图片都切换工具栏：触屏靠它唤出，电脑端语义不变（本来就有 hover）
+  toolbarVisible.value = !toolbarVisible.value
+
   if (isTempMode.value) {
     emit('applyTempTags', props.image)
     return
@@ -132,10 +231,24 @@ function handleDelete() {
 }
 
 function handleImageError() {
+  // ---- 第一层回退：CDN -> 本地后端 ----
+  // CDN 背后的 R2 由后端异步同步，新图会有短暂 404 窗口。
+  // 这里换成后端直连地址再试一次，用户完全无感。
   if (currentSrcType.value === 'thumbnail') {
-    // 缩略图失败时不自动切换，等待点击加载原图
+    if (!cdnFailedThumb.value && isCdnUrl(thumbnailSrc.value)) {
+      cdnFailedThumb.value = true
+      return // src 变化会触发浏览器重新加载
+    }
+    // 缩略图本地也失败时不自动切换，等待点击加载原图
     return
   }
+
+  if (!cdnFailedImage.value && isCdnUrl(imageSrc.value)) {
+    cdnFailedImage.value = true
+    return // src 变化会触发重新加载
+  }
+
+  // ---- 两层都失败：真正标记为错误 ----
   imageError.value = true
   isOriginalLoading.value = false
 }
@@ -152,17 +265,27 @@ function loadOriginalImage() {
   imageError.value = false
   isOriginalLoading.value = true
 
-  const tempImg = new Image()
-  tempImg.onload = () => {
-    currentSrcType.value = 'original'
-    isOriginalLoading.value = false
-    imageError.value = false
+  // 预加载原图；若 CDN 拿不到（R2 尚未同步），自动改用本地后端地址
+  const tryLoad = (url: string, isFallback: boolean) => {
+    const tempImg = new Image()
+    tempImg.onload = () => {
+      if (isFallback) cdnFailedImage.value = true
+      currentSrcType.value = 'original'
+      isOriginalLoading.value = false
+      imageError.value = false
+    }
+    tempImg.onerror = () => {
+      if (!isFallback && isCdnUrl(url)) {
+        tryLoad(localImageUrl(props.image.filename), true)
+        return
+      }
+      isOriginalLoading.value = false
+      imageError.value = true
+    }
+    tempImg.src = url
   }
-  tempImg.onerror = () => {
-    isOriginalLoading.value = false
-    imageError.value = true
-  }
-  tempImg.src = imageSrc.value
+
+  tryLoad(imageSrcFinal.value, cdnFailedImage.value)
 }
 
 function openEditor() {
@@ -220,6 +343,7 @@ onBeforeUnmount(() => {
     ]"
   >
     <img
+      v-if="currentSrc"
       class="image-element w-full h-full object-contain"
       :src="currentSrc"
       alt=""
@@ -228,6 +352,14 @@ onBeforeUnmount(() => {
       @load="handleImageLoad"
       @error="handleImageError"
     />
+
+    <!-- 批量打包等待中：显示占位，不发任何单图请求 -->
+    <div
+      v-else
+      class="absolute inset-0 flex items-center justify-center text-gray-300"
+    >
+      <Loader2 class="w-6 h-6 animate-spin" />
+    </div>
 
     <!-- Loader for original load -->
     <div
@@ -278,10 +410,20 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 顶部工具栏 -->
-    <div class="top-toolbar absolute top-0 left-0 right-0 p-2 flex justify-between items-start hidden group-hover:flex z-30">
+    <!--
+      显隐：电脑端靠 group-hover（原有行为），触屏靠点击图片切换 toolbarVisible。
+      保留 hidden 作为默认，flex 由两种途径之一命中。
+    -->
+    <div
+      :class="[
+        'top-toolbar absolute top-0 left-0 right-0 p-2 justify-between items-start z-30',
+        toolbarVisible ? 'flex' : 'hidden group-hover:flex'
+      ]"
+      @click.stop
+    >
       <a
         :href="imageSrc"
-        :download="image.filename"
+        :download="downloadName"
         class="p-2 bg-black/40 text-white rounded-lg hover:bg-black/60 transition"
         @click.stop
       >

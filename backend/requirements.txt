@@ -5,3 +5,9 @@ pydantic-settings>=2.0.0
 python-multipart>=0.0.9
 aiofiles>=24.1.0
 Pillow>=10.0.0
+
+# HEIC/HEIF 解码支持（可选但强烈建议）
+# 数据集中存在 HEIC/HEIF 图片（个别文件扩展名还被误写成 .gif），
+# 缺少它会导致这些图片无法生成缩略图。
+# app/main.py 与 app/routers/images.py 会在导入时尝试注册该解码器。
+pillow-heif>=0.18.0

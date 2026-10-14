@@ -6,18 +6,38 @@ import os
 import random
 import threading
 import time
-import glob as glob_module
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pathlib import Path
 from PIL import Image
 import io
 
+# 注册 HEIF/HEIC 解码器（可选依赖）
+# 旧项目里有少量 HEIC/HEIF 图片，部分文件的扩展名还被写成了 .gif，
+# 不注册的话 Pillow 会直接抛 UnidentifiedImageError，缩略图生成会失败。
+try:
+    from pillow_heif import register_heif_opener
+except ImportError:
+    register_heif_opener = None
+else:
+    register_heif_opener()
+
 from .config import settings
 from .database import init_database, get_connection, rebuild_tags_dict
+from .image_format import resolve_upload_ext
+from .sharding import (
+    sharded_rel_path,
+    sharded_path,
+    thumbnail_rel_path,
+    thumbnail_path,
+    resolve_image_path,
+    extract_md5,
+)
+from .r2_sync import sync_async, check_config as r2_check_config, get_stats as r2_get_stats
 
 # 创建应用
 app = FastAPI(
@@ -35,6 +55,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# GZip 压缩
+#
+# 【为什么需要】前端 build 后的 JS 是 311 KB，实测 gzip 后只有约 107 KB（省 65%）。
+# 而实测公网链路约 0.6 Mbps，未压缩传输要 4.2 秒，压缩后约 1.4 秒。
+# 本机环境测不出差别（回环带宽足够），但对公网穿透链路是明显改善。
+#
+# minimum_size=500：小于 500 字节的响应不压缩（压缩反而更大，且省不了几个字节）。
+# 注意 middleware 的添加顺序是「后加的先执行」，放这里不影响 CORS。
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
 # 延迟导入路由（避免循环导入）
 from .routers import images, rules, search, system
 
@@ -44,14 +74,108 @@ app.include_router(search.router, prefix="/api", tags=["搜索"])
 app.include_router(rules.router, prefix="/api/rules", tags=["规则树"])
 app.include_router(system.router, prefix="/api", tags=["系统"])
 
+# 同一套路由再挂一份 /g2/api 前缀。
+#
+# 【为什么需要】前端固定用 /g2/api/xxx 调用（见 frontend/src/composables/useApi.ts），
+# 以前由 Vite dev server 把 /g2/api 重写成 /api 转发给后端。
+# 现在改由后端直接托管前端，没有那层重写了，所以后端自己也要认这个前缀。
+#
+# 两种前缀都保留，是为了兼容：本地开发仍可走 dev server 代理。
+app.include_router(images.router, prefix="/g2/api/images", tags=["图片(g2)"], include_in_schema=False)
+app.include_router(search.router, prefix="/g2/api", tags=["搜索(g2)"], include_in_schema=False)
+app.include_router(rules.router, prefix="/g2/api/rules", tags=["规则树(g2)"], include_in_schema=False)
+app.include_router(system.router, prefix="/g2/api", tags=["系统(g2)"], include_in_schema=False)
+
+# =============================================================================
+#  静态文件挂载（HTTP-only 安全版）
+# =============================================================================
+#
+# 【为什么不用原生 StaticFiles】
+# starlette 的 StaticFiles.__call__ 第一行就是：
+#     assert scope["type"] == "http"
+# 一旦有 WebSocket 请求打到挂载点，就会抛 AssertionError，
+# uvicorn 打出一大段 traceback（实测复现）。
+#
+# 【什么时候会有 WebSocket 打进来】
+# 前端曾用 Vite dev server（HMR 走 WebSocket），nginx 为此配置了：
+#     proxy_set_header Upgrade $http_upgrade;
+#     proxy_set_header Connection "upgrade";
+# 换成 build 产物后前端已无 HMR，但 nginx 仍无条件升级连接，
+# 于是 WebSocket 请求被转发到后端静态挂载点 —— 日志被 traceback 刷屏。
+#
+# 【处理方式】
+# 子类化并覆盖 __call__：遇到非 HTTP 的 scope（websocket/lifespan）
+# 直接优雅关闭连接，不打日志、不抛异常。
+# 这样无论 nginx 怎么配、浏览器怎么请求，都不会再出现 AssertionError。
+class HttpOnlyStaticFiles(StaticFiles):
+    """只处理 HTTP 的 StaticFiles；遇到 WebSocket 等其它 scope 时安静拒绝。"""
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            # WebSocket：按协议要求先 accept 再 close，避免客户端报错。
+            # lifespan 等其它类型直接忽略。
+            if scope["type"] == "websocket":
+                try:
+                    await send({"type": "websocket.close", "code": 1000})
+                except Exception:
+                    pass
+            return
+        await super().__call__(scope, receive, send)
+
+
 # 静态文件服务（图片）
 images_path = Path(settings.images_path)
 images_path.mkdir(exist_ok=True)
-app.mount("/images", StaticFiles(directory=images_path), name="images")
+app.mount("/images", HttpOnlyStaticFiles(directory=images_path), name="images")
 
 # 缩略图目录
 thumbnails_path = Path(settings.thumbnails_path)
 thumbnails_path.mkdir(exist_ok=True)
+
+# =============================================================================
+#  前端 build 产物托管（/g2/）
+# =============================================================================
+#
+# 【为什么由后端托管】
+# 原来前端跑 Vite dev server（5173），公网经 nginx 反代到它。但 dev 模式下
+# 浏览器要逐个请求 .ts/.vue 源码（实测 28 个模块、约 2.6 MB 未压缩），
+# 而且会加载 175 KB 的 HMR 客户端 —— 在公网链路上这就是几十秒。
+#
+# build 后全部合并成 1 个 JS + 1 个 CSS（约 310 KB + 48 KB），
+# 由本后端直接托管即可，无需再跑 dev server、也无需额外反代。
+#
+# 访问方式不变：https://bqbq.mmc199.com/g2/
+FRONTEND_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
+
+
+def _mount_frontend() -> None:
+    """把 frontend/dist 挂到 /g2/。产物不存在时只提示，不影响后端启动。"""
+    if not FRONTEND_DIST.is_dir():
+        print(f"[Frontend] 未找到 build 产物: {FRONTEND_DIST}")
+        print("[Frontend] 前端将不可用；请先执行: cd frontend && npm run build")
+        return
+
+    index_file = FRONTEND_DIST / "index.html"
+    if not index_file.is_file():
+        print(f"[Frontend] 目录存在但缺少 index.html: {FRONTEND_DIST}")
+        return
+
+    # html=True 让 /g2/ 自动返回 index.html
+    # 用 HttpOnlyStaticFiles 而非原生 StaticFiles：前者遇到 WebSocket 会安静拒绝，
+    # 不会抛 AssertionError 刷屏日志（nginx 仍可能转发 Upgrade 头）
+    app.mount(
+        "/g2",
+        HttpOnlyStaticFiles(directory=FRONTEND_DIST, html=True),
+        name="frontend",
+    )
+
+    assets = FRONTEND_DIST / "assets"
+    n = len(list(assets.iterdir())) if assets.is_dir() else 0
+    print(f"[Frontend] 已托管 build 产物: {FRONTEND_DIST} ({n} 个 asset)")
+    print("[Frontend] 访问: http://127.0.0.1:8000/g2/")
+
+
+_mount_frontend()
 
 
 def extract_random_frame(img: Image.Image) -> Image.Image:
@@ -104,60 +228,145 @@ def create_thumbnail(source_path: Path, thumb_path: Path) -> bool:
             return False
 
 
-@app.get("/thumbnails/{filename}")
+@app.get("/thumbnails/{filename:path}")
 async def serve_thumbnail(filename: str):
-    """提供缩略图服务"""
-    # 兼容子目录路径（如 trash_bin/xxx.jpg）
-    requested_path = Path(filename)
-    file_name = requested_path.name
-    # 获取不带后缀的文件名
-    base_name = os.path.splitext(file_name)[0]
+    """
+    提供缩略图服务。
 
-    # 如果文件名已经包含 _thumbnail，直接使用
-    if base_name.endswith("_thumbnail"):
-        thumb_name = f"{base_name}.jpg"
-        md5 = base_name.replace("_thumbnail", "")
-    else:
-        # 否则添加 _thumbnail 后缀
-        thumb_name = f"{base_name}_thumbnail.jpg"
-        md5 = base_name
+    支持三种入参形态（因为前端可能传分片路径，也可能是历史遗留的平铺名）：
+      1. 分片相对路径：      7f/5d/7f5d....jpg
+      2. 已带 _thumbnail：   7f/5d/7f5d..._thumbnail.jpg
+      3. 平铺原名：          7f5d....jpg  /  trash_bin/xxx.jpg
 
-    thumb_path = thumbnails_path / thumb_name
-    thumb_path_subdir = None
-    if requested_path.parent != Path('.'):
-        thumb_path_subdir = thumbnails_path / requested_path.parent / thumb_name
+    缩略图缺失时会按分片规则就地生成。
+    """
+    requested = filename.replace("\\", "/").strip("/")
+    md5 = extract_md5(requested)
 
-    if thumb_path.exists():
-        return FileResponse(thumb_path)
-    if thumb_path_subdir and thumb_path_subdir.exists():
-        return FileResponse(thumb_path_subdir)
+    # ---- 1) 先按分片规则直接找缩略图 ----
+    if md5:
+        cand = thumbnail_path(thumbnails_path, md5)
+        if cand.is_file():
+            return FileResponse(cand)
 
-    # 如果缩略图不存在，尝试生成
-    # 查找原图
-    original_subpath = images_path / requested_path
-    if original_subpath.exists():
-        if create_thumbnail(original_subpath, thumb_path):
-            return FileResponse(thumb_path)
+    # ---- 2) 兼容：请求里就带了目录（例如 trash_bin） ----
+    legacy_thumb = thumbnails_path.joinpath(*requested.split("/"))
+    if legacy_thumb.is_file():
+        return FileResponse(legacy_thumb)
+    parent = Path(requested).parent
+    if str(parent) != ".":
+        alt = thumbnails_path.joinpath(*str(parent).split("/")) / f"{md5}_thumbnail.jpg"
+        if alt.is_file():
+            return FileResponse(alt)
 
-    original_named = images_path / file_name
-    if original_named.exists():
-        if create_thumbnail(original_named, thumb_path):
-            return FileResponse(thumb_path)
+    # ---- 3) 缩略图不存在：找到原图后按分片规则生成 ----
+    original = resolve_image_path(images_path, requested)
+    if original is None and md5:
+        # 回退：按分片规则 + 各候选扩展名找原图
+        for ext in settings.allowed_extensions:
+            cand = sharded_path(images_path, md5, ext)
+            if cand.is_file():
+                original = cand
+                break
+    if original is None:
+        # 再回退：库里的 filename 为准（可能扩展名与磁盘不同）
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT filename FROM images WHERE md5 = ?", (md5,)
+            ).fetchone()
+        if row:
+            original = resolve_image_path(images_path, row["filename"])
 
-    for ext in settings.allowed_extensions:
-        original_path = images_path / f"{md5}.{ext}"
-        if original_path.exists():
-            if create_thumbnail(original_path, thumb_path):
-                return FileResponse(thumb_path)
-            break
+    if original is not None:
+        target = thumbnail_path(thumbnails_path, md5)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if create_thumbnail(original, target):
+            return FileResponse(target)
 
     raise HTTPException(status_code=404, detail="缩略图不存在")
 
 
+@app.post("/thumbnails/batch")
+async def serve_thumbnail_batch(payload: dict):
+    """
+    批量打包缩略图（一次请求取回当前页全部缩略图）。
+
+    【为什么要这个接口】
+    生产链路是「中国服务器 → 内网穿透 → 美国服务器」，
+    单次往返 RTT 约 200ms、带宽约 5Mbps。
+    一页 50 张缩略图若逐个请求：
+        9 轮 RTT × 200ms = 1800ms 的纯等待开销
+    合并成 1 个请求后这部分开销降到 1 轮。
+
+    【为什么用 ZIP_STORED（不压缩）】
+    缩略图本身就是 JPEG，已经高度压缩，再套 deflate 通常只能省 1-2%，
+    却要付出服务端 CPU 和前端解压时间的代价。
+    实测 50 张仅多 ~0.5% 体积（ZIP 头开销），所以直接存储。
+
+    【返回】
+    application/zip，内部文件名＝ md5，前端按 md5 索引即可。
+    缺失的缩略图会被跳过（不报错），前端对缺失项回退到原图接口。
+
+    请求体：
+        { "md5": ["...", "..."]  }     最多 200 个
+    """
+    import zipfile
+
+    md5_list = payload.get("md5") or []
+    if not isinstance(md5_list, list):
+        raise HTTPException(status_code=400, detail="md5 必须是数组")
+    # 限制单次数量，避免一次请求占用过多内存/带宽
+    md5_list = [str(m).strip().lower() for m in md5_list if m][:200]
+    if not md5_list:
+        raise HTTPException(status_code=400, detail="md5 不能为空")
+
+    # 先把要打包的文件读进内存（缩略图很小，平均约 36 KiB）
+    buf = io.BytesIO()
+    packed = 0
+    missing: list[str] = []
+
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        for md5 in md5_list:
+            p = thumbnail_path(thumbnails_path, md5)
+            if not p.is_file():
+                missing.append(md5)
+                continue
+            try:
+                zf.write(p, arcname=md5)   # 文件名就是 md5，前端直接索引
+                packed += 1
+            except OSError:
+                missing.append(md5)
+
+    if packed == 0:
+        raise HTTPException(status_code=404, detail="本页缩略图均不存在")
+
+    buf.seek(0)
+    headers = {
+        # 缩略图按 md5 命名，内容不变，可长缓存
+        "Cache-Control": "public, max-age=86400",
+        # 把缺失清单告知前端，便于回退
+        "X-Packed-Count": str(packed),
+        "X-Missing-Count": str(len(missing)),
+    }
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers=headers,
+    )
+
+
 def scan_and_import_folder():
     """
-    启动时扫描 images 文件夹，自动导入未在数据库中的图片。
-    处理文件验证、重命名、去重、缩略图生成。
+    启动时扫描图片目录，自动导入未在数据库中的图片。
+
+    【分片改造要点】
+    1. 目录是 ab/cd/md5.ext 两段式分片结构，必须递归扫描（rglob），
+       不能用 glob("*.jpg")，否则一张图都扫不到。
+    2. 已入库的文件直接跳过，不重新计算 MD5。
+       43 万张图如果每次启动都全量读一遍算 MD5，要读 134GB，启动会卡死。
+    3. 新文件按分片规则落位，不再平铺到根目录。
+    4. 文件名已经是 md5 的，直接采用文件名作为 md5（旧项目就是这么做的），
+       不用为了拿 md5 再读一遍文件内容。
     """
     print("[Folder Scan] Starting automatic import from images folder...")
 
@@ -166,97 +375,144 @@ def scan_and_import_folder():
         print(f"[Folder Scan] Image folder not found: {img_folder}")
         return
 
-    # 支持的图片格式
-    supported_patterns = [f"*.{ext}" for ext in settings.allowed_extensions]
+    allowed = {e.lower().lstrip(".") for e in settings.allowed_extensions}
 
-    # 收集所有文件路径
-    all_files = []
-    for pattern in supported_patterns:
-        all_files.extend(img_folder.glob(pattern))
-        # 也扫描大写扩展名
-        all_files.extend(img_folder.glob(pattern.upper()))
+    # 1) 先取数据库现状：md5 -> filename
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT md5, filename FROM images")
+        rows = cursor.fetchall()
+        existing_md5s = {row["md5"].lower() for row in rows}
 
-    # 去重
-    all_files = list(set(all_files))
+    print(f"[Folder Scan] DB 中已有 {len(existing_md5s)} 条记录")
+
+    # 2) 递归收集文件（跳过垃圾目录）
+    #
+    # 【性能】这里刻意不用 Path.rglob：
+    # 43 万文件下 rglob 会为每个条目构造 Path 对象并反复 stat，实测要 60s+。
+    # 改用 os.scandir 显式走两层分片目录，DirEntry 自带缓存属性，快得多。
+    def iter_image_files():
+        try:
+            with os.scandir(img_folder) as top:
+                for d1 in top:
+                    if not d1.is_dir(follow_symlinks=False):
+                        # 根目录下偶尔残留的文件也要处理
+                        if d1.is_file(follow_symlinks=False):
+                            if d1.name.rsplit(".", 1)[-1].lower() in allowed:
+                                yield Path(d1.path)
+                        continue
+                    if d1.name.startswith("."):
+                        continue
+                    with os.scandir(d1.path) as mid:
+                        for d2 in mid:
+                            if d2.is_dir(follow_symlinks=False):
+                                # 分片第二层
+                                with os.scandir(d2.path) as leaf:
+                                    for f in leaf:
+                                        if not f.is_file(follow_symlinks=False):
+                                            continue
+                                        if f.name.rsplit(".", 1)[-1].lower() in allowed:
+                                            yield Path(f.path)
+                            elif d2.is_file(follow_symlinks=False):
+                                # 兼容 trash_bin 这类历史单层目录
+                                if d2.name.rsplit(".", 1)[-1].lower() in allowed:
+                                    yield Path(d2.path)
+        except OSError as e:
+            print(f"[Folder Scan] 目录遍历失败: {e}")
+
+    all_files = list(iter_image_files())
     total_files = len(all_files)
+    print(f"[Folder Scan] 磁盘上发现 {total_files} 个图片文件")
+
+    # 【快速路径】磁盘文件数与库里记录数完全一致时，说明没有新文件，
+    # 直接跳过逐文件比对，避免每次启动都白跑 40 多万次循环。
+    # 可用 BQBQ_FORCE_FOLDER_SCAN=1 强制全量扫描。
+    if (
+        os.getenv("BQBQ_FORCE_FOLDER_SCAN") != "1"
+        and total_files == len(existing_md5s)
+    ):
+        print(
+            f"[Folder Scan] 磁盘 {total_files} 个文件与库中记录数一致，"
+            "跳过逐文件校验（如需强制扫描请设置 BQBQ_FORCE_FOLDER_SCAN=1）\n"
+        )
+        return
 
     if total_files == 0:
         print("[Folder Scan] No image files found.")
         return
 
-    print(f"[Folder Scan] Found {total_files} files to process...")
-
-    # 获取数据库中已存在的 MD5 集合
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT md5, filename FROM images")
-        rows = cursor.fetchall()
-        existing_md5s = {row['md5'] for row in rows}
-        md5_to_filename = {row['md5']: row['filename'] for row in rows}
-
-    counters = {'skipped': 0, 'renamed': 0, 'error': 0}
+    counters = {"skipped": 0, "moved": 0, "error": 0}
     batch_insert_data = []
 
     def process_single_file(file_path: Path):
-        """处理单个文件"""
+        """处理单个文件：判断是否需要入库 / 是否需要挪进分片目录"""
         try:
-            if not file_path.exists():
-                return ('skipped', None)
+            stem = file_path.stem.lower()
+            ext = file_path.suffix.lower().lstrip(".")
 
-            # 计算文件 MD5
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
+            # 主名已经是 32 位十六进制（md5 命名）时，直接用主名当 md5，
+            # 避免为了算 md5 而读取整个文件。
+            is_md5_name = len(stem) == 32 and all(
+                c in "0123456789abcdef" for c in stem
+            )
 
-            md5 = hashlib.md5(file_data).hexdigest()
-            current_filename = file_path.name
+            if is_md5_name and stem in existing_md5s:
+                return ("skipped", None)
 
-            # 检查是否已存在于数据库
-            if md5 in existing_md5s:
-                return ('skipped', None)
+            if not is_md5_name:
+                # 非 md5 命名：需要读内容算 md5（少量文件，可接受）
+                with open(file_path, "rb") as f:
+                    md5 = hashlib.md5(f.read()).hexdigest()
+                if md5 in existing_md5s:
+                    return ("skipped", None)
+            else:
+                md5 = stem
 
-            # 新文件处理
-            ext = file_path.suffix.lower() or '.jpg'
-            standard_filename = f"{md5}{ext}"
-            standard_path = img_folder / standard_filename
+            # 计算标准分片位置
+            rel = sharded_rel_path(md5, ext)
+            standard_path = img_folder.joinpath(*rel.split("/"))
 
-            # 重命名为标准格式
+            # 如果不在标准位置，挪过去（同一卷内是元数据 rename，很快）
             if file_path != standard_path:
                 if standard_path.exists():
-                    # 目标文件已存在，删除当前重复文件
-                    file_path.unlink()
-                    return ('skipped', None)
-                else:
+                    try:
+                        file_path.unlink()  # 目标已存在，删掉这个重复文件
+                    except OSError:
+                        pass
+                    return ("skipped", None)
+                standard_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
                     file_path.rename(standard_path)
+                except OSError as e:
+                    print(f"[Folder Scan] 移动失败 {file_path}: {e}")
+                    return ("error", None)
 
-            # 获取图片尺寸
+            # 读取尺寸与大小（只对新文件做，数量少）
             try:
                 with Image.open(standard_path) as img:
                     w, h = img.size
             except Exception:
                 w, h = 0, 0
 
-            file_size = len(file_data)
-            file_mtime = standard_path.stat().st_mtime
-
-            return ('new', {
-                'md5': md5,
-                'filename': standard_filename,
-                'path': standard_path,
-                'width': w,
-                'height': h,
-                'size': file_size,
-                'mtime': file_mtime
+            return ("new", {
+                "md5": md5,
+                "filename": rel,
+                "path": standard_path,
+                "width": w,
+                "height": h,
+                "size": standard_path.stat().st_size,
+                "mtime": standard_path.stat().st_mtime,
             })
 
         except Exception as e:
             print(f"[Folder Scan] Error processing {file_path}: {e}")
-            return ('error', None)
+            return ("error", None)
 
     def generate_thumbnail_for_item(item):
-        """生成单个缩略图"""
+        """生成单个缩略图（按分片规则落位）"""
         try:
-            thumb_filename = f"{item['md5']}_thumbnail.jpg"
-            thumb_path = thumbnails_path / thumb_filename
+            thumb_path = thumbnail_path(thumbnails_path, item['md5'])
+            thumb_path.parent.mkdir(parents=True, exist_ok=True)
             create_thumbnail(Path(item['path']), thumb_path)
             return True
         except Exception as e:
@@ -280,8 +536,6 @@ def scan_and_import_folder():
 
             if status == 'skipped':
                 counters['skipped'] += 1
-            elif status == 'renamed':
-                counters['renamed'] += 1
             elif status == 'error':
                 counters['error'] += 1
             elif status == 'new' and data:
@@ -299,7 +553,8 @@ def scan_and_import_folder():
             with get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.executemany(
-                    "INSERT INTO images (md5, filename, created_at, width, height, file_size, tags) VALUES (?, ?, datetime(?, 'unixepoch'), ?, ?, ?, '')",
+                    """INSERT INTO images (md5, filename, created_at, width, height, file_size, tags)
+                       VALUES (?, ?, datetime(?, 'unixepoch'), ?, ?, ?, '')""",
                     [(item['md5'], item['filename'], item['mtime'], item['width'], item['height'], item['size'])
                      for item in batch_insert_data]
                 )
@@ -332,7 +587,6 @@ def scan_and_import_folder():
     print(f"\n[Folder Scan] Summary:")
     print(f"  - Imported: {imported_count}")
     print(f"  - Skipped (already in DB): {counters['skipped']}")
-    print(f"  - Renamed: {counters['renamed']}")
     print(f"  - Errors: {counters['error']}")
     if thumbnail_errors > 0:
         print(f"  - Thumbnail errors: {thumbnail_errors}")
@@ -370,6 +624,17 @@ async def startup():
     # 启动定时更新任务
     start_tags_dict_updater(settings.tags_dict_update_interval)
 
+    # R2 同步自检：把状态打到日志，便于确认新图会不会推上 CDN
+    cfg = r2_check_config()
+    if not cfg["enabled"]:
+        print("[R2] 同步已禁用（BQBQ_R2_ENABLED=0）")
+    elif not cfg["rclone_found"]:
+        print(f"[R2] ⚠ 未找到 rclone（{cfg['rclone']}），新图不会同步到 R2")
+        print("[R2]    前端原图走 CDN，新图可能 404；请安装 rclone 或设 BQBQ_R2_ENABLED=0")
+    else:
+        print(f"[R2] 同步已启用: {cfg['target_example']}")
+        print(f"[R2]    源目录: {images_path}")
+
 
 @app.get("/")
 async def root():
@@ -379,17 +644,29 @@ async def root():
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
-    """上传图片文件（FormData 方式）"""
+    """
+    上传图片文件（FormData 方式）。
+
+    返回字段与 /api/images/upload 保持一致：
+        exists=True  表示本次上传前该图已存在（命中重复）
+        exists=False 且 success=True 表示新图已写入
+    """
     # 验证文件类型
     if not file.filename:
-        return {"success": False}
-
-    ext = Path(file.filename).suffix.lower()
-    if not ext:
-        ext = ".jpg"
+        return {"success": False, "exists": False, "msg": "no filename"}
 
     # 读取文件内容
     content = await file.read()
+    if not content:
+        return {"success": False, "exists": False, "msg": "empty file"}
+
+    # 【关键】扩展名以**文件头**为准，绝不信任 file.filename。
+    # 机器人传的固定是 ("auto.gif", data, "image/gif")，直接用会让
+    # JPEG 存成 .gif（详见 image_format.resolve_upload_ext）。
+    try:
+        ext = resolve_upload_ext(content, file.filename)
+    except ValueError as e:
+        return {"success": False, "exists": False, "msg": str(e)}
 
     # 计算 MD5
     md5 = hashlib.md5(content).hexdigest()
@@ -403,7 +680,7 @@ async def upload_file(file: UploadFile = File(...)):
             # 重复图片：更新上传时间
             cursor.execute("UPDATE images SET created_at = CURRENT_TIMESTAMP WHERE md5 = ?", (md5,))
             conn.commit()
-            return {"success": False, "msg": "Duplicate image (timestamp refreshed)"}
+            return {"success": False, "exists": True, "msg": "duplicate", "md5": md5}
 
         # 获取图片尺寸
         try:
@@ -412,22 +689,26 @@ async def upload_file(file: UploadFile = File(...)):
         except Exception:
             width, height = 0, 0
 
-        # 生成文件名（使用 MD5 避免重名）
-        filename = f"{md5}{ext}"
-        file_path = images_path / filename
+        # 生成文件名（使用 MD5 避免重名）并按分片规则落盘
+        rel_filename = sharded_rel_path(md5, ext)
+        file_path = images_path.joinpath(*rel_filename.split("/"))
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_bytes(content)
 
-        # 生成缩略图
-        thumb_filename = f"{md5}_thumbnail.jpg"
-        thumb_path = thumbnails_path / thumb_filename
+        # 生成缩略图（同样按分片规则）
+        thumb_path = thumbnail_path(thumbnails_path, md5)
+        thumb_path.parent.mkdir(parents=True, exist_ok=True)
         create_thumbnail(file_path, thumb_path)
 
-        # 保存到数据库
+        # 保存到数据库（filename 存分片相对路径）
         cursor.execute(
             """INSERT INTO images (filename, md5, tags, file_size, width, height)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (filename, md5, "", len(content), width, height)
+            (rel_filename, md5, "", len(content), width, height)
         )
         conn.commit()
 
-        return {"success": True, "msg": md5}
+    # 异步推到 R2（供 CDN 使用），不阻塞响应
+    sync_async(file_path, rel_filename)
+
+    return {"success": True, "exists": False, "msg": md5, "md5": md5}

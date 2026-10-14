@@ -3,7 +3,7 @@
  * Gallery 主页面 - 图片画廊
  * 一比一复刻旧项目的所有功能
  */
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, nextTick, computed, watch } from 'vue'
 import { Loader2 } from 'lucide-vue-next'
 import TagInput from '@/components/TagInput.vue'
 import MemeCard from '@/components/MemeCard.vue'
@@ -12,6 +12,7 @@ import SparkMD5 from 'spark-md5'
 import FloatingButtons from '@/components/FloatingButtons.vue'
 import ToastContainer from '@/components/ToastContainer.vue'
 import { useImageApi, useRulesApi, useSystemApi } from '@/composables/useApi'
+import { preloadThumbnails } from '@/composables/useThumbBatch'
 import { useGlobalStore } from '@/stores/useGlobalStore'
 import { useToast } from '@/composables/useToast'
 import type { MemeImage, RuleGroup } from '@/types'
@@ -311,6 +312,12 @@ async function searchImages(resetPage = true) {
 
     originalTagsCount.value = totalOriginal
     expandedTagsCount.value = totalExpanded
+
+    // 缩略图批量打包：本页所有 md5 一次请求取回。
+    // 不 await —— 让卡片先渲染出来（先显示占位），
+    // 打包完成后 MemeCard 会通过轮询拿到 blob 并换上。
+    // 这样即使打包较慢，页面也不会卡住不动。
+    void preloadThumbnails(mapped.map(m => m.md5))
   }
 }
 
@@ -340,6 +347,65 @@ function handleMainScroll() {
     loadMore()
   }
 }
+
+// ---------------------------------------------------------------------------
+// 自动补足（解决「一屏装得下时无法翻页」）
+// ---------------------------------------------------------------------------
+//
+// 【问题】原来翻页只依赖 scroll 事件，隐含前提是「内容一定超出容器高度」。
+// 当一屏就能装下全部结果时（例如手机请求桌面版 8 列布局、
+// 或大屏 + 结果较少），容器 scrollHeight == clientHeight，
+// 既没有滚动条、也永远不会触发 scroll 事件，
+// 于是 loadMore() 永不调用 —— 页面卡死在首批结果上。
+//
+// 【修复】每次渲染后主动检查：若内容还没撑出滚动条且还有更多数据，
+// 就继续拉下一页，直到撑出滚动条（或数据取完）。
+// 这样「一屏装得下」会自动补足到能滚动，用户无需任何操作。
+const MAX_AUTOFILL_ROUNDS = 10   // 上限，避免极端情况下无限请求
+let autoFillRound = 0
+
+async function autoFillIfNeeded() {
+  const el = mainRef.value
+  if (!el) return
+  if (isLoading.value || !hasMore.value) {
+    autoFillRound = 0
+    return
+  }
+  // 判断内容是否已撑出滚动条（留 4px 容差，避免亚像素误差导致误判）
+  const notScrollable = el.scrollHeight <= el.clientHeight + 4
+  if (!notScrollable) {
+    autoFillRound = 0
+    return
+  }
+  if (autoFillRound >= MAX_AUTOFILL_ROUNDS) return
+
+  autoFillRound++
+  await loadMore()
+  // 本次加载可能仍然没撑满，交给下一次渲染后的检查
+}
+
+// 每次图片列表变化后（含新增和重置）检查一次
+watch(
+  () => images.value.length,
+  async () => {
+    // 等 DOM 更新完成再量高度，否则读到的是旧布局
+    await nextTick()
+    await autoFillIfNeeded()
+  },
+  { flush: 'post' }
+)
+
+// 视口变化（旋转屏幕、拖拽窗口、手机切换电脑版）后重新检查
+onMounted(() => {
+  window.addEventListener('resize', handleViewportChange)
+})
+function handleViewportChange() {
+  autoFillRound = 0
+  void autoFillIfNeeded()
+}
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleViewportChange)
+})
 
 // 加载所有标签（带缓存）
 async function loadAllTags(forceRefresh = false) {

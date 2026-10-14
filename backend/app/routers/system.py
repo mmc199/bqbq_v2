@@ -33,29 +33,20 @@ async def get_version():
 
 @router.post("/check_md5")
 async def check_md5_compat(data: CheckMD5Request):
-    """旧项目兼容：/api/check_md5"""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, filename FROM images WHERE md5 = ?", (data.md5,))
-        row = cursor.fetchone()
+    """旧项目兼容：POST /api/check_md5
 
-        if row:
-            time_refreshed = False
-            if data.refresh_time:
-                cursor.execute(
-                    "UPDATE images SET created_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (row['id'],)
-                )
-                conn.commit()
-                time_refreshed = True
+    【2026-10 改为复用 images.check_md5_exists】
+    此前这里是**重复实现**（同样的 SQL + 同样的 refresh 逻辑），
+    两边容易漂移。现在统一走同一份代码，保证：
+      · 返回字段完全一致（含新增的 tags）
+      · refresh_time 行为一致
 
-            return {
-                "exists": True,
-                "filename": row['filename'],
-                "time_refreshed": time_refreshed
-            }
+    注意：这个兼容接口返回的 refresh 是按 id 更新，
+    与 images 侧按 md5 更新等价（md5 唯一）。
+    """
+    from .images import check_md5_exists
 
-        return {"exists": False}
+    return await check_md5_exists(data.md5, data.refresh_time)
 
 
 @router.post("/update_tags")

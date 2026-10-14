@@ -110,14 +110,19 @@ bqbq_v2/
 ├── CLAUDE.md
 ├── ARCHITECTURE.md
 ├── MIGRATION_STATUS.md
+├── SHARDING.md                     # 43 万图片分片接入说明
 │
 ├── backend/
 │   ├── run.py
 │   ├── requirements.txt
-│   ├── meme.db
+│   ├── meme.db                     # 434,810 行
+│   ├── merge_into_v2.py            # 旧库合并脚本
+│   ├── normalize_filenames.py      # filename 归一为分片路径
+│   ├── backfill_metadata.py        # 回填 size / 宽高
 │   └── app/
 │       ├── main.py
 │       ├── config.py
+│       ├── sharding.py             # md5 分片路径规则（唯一真源）
 │       ├── database.py
 │       ├── models/
 │       │   ├── image.py
@@ -223,6 +228,72 @@ start_tags_dict_updater()
 ```
 
 这部分是对旧项目实际图片组织方式的一种适配。
+
+---
+
+## 图片存储：md5 两段式分片
+
+### 为什么
+
+数据集有 **43 万张图片**。全部平铺在单个目录时，Windows/NTFS 的目录枚举
+会急剧变慢（资源管理器卡死、扫描要几分钟）。分片后单目录条目数从
+**434,018 降到 256**。
+
+### 磁盘布局
+
+```text
+D:\bqbq_backend\                        （backend/meme_images 软链接到这里）
+└── meme_images\
+    ├── 00\ ... ff\                     # 256 个一级分片
+    │   └── 00\ ... ff\                 # 每个 256 个二级分片
+    │       └── 000036806d0e3b598068479ac72b9ea4.jpg   # 每叶子 5~8 个文件
+    └── .stfolder\                      # Syncthing 元数据，扫描时跳过
+
+    meme_images_thumbnail\              # 完全镜像的结构
+    └── 00\00\000036806d0e3b598068479ac72b9ea4_thumbnail.jpg
+```
+
+### 路径规则
+
+```text
+<md5 前 2 位>/<md5 第 3-4 位>/<md5>.<ext>
+```
+
+`images.filename` 存的就是这个**相对路径**（正斜杠分隔）。
+
+### 数据流（全链路天然支持分片）
+
+```text
+数据库 images.filename = "7f/5d/7f5d....gif"
+        │
+        ├─► 前端 MemeCard.vue
+        │     imageSrc     = `/images/${filename}`
+        │     thumbnailSrc = `/thumbnails/${filename}`
+        │             │
+        │             ▼
+        └─► FastAPI
+              /images/{filename:path}      -> StaticFiles 挂载，按 URL 路径取文件
+              /thumbnails/{filename:path}  -> 按分片规则找/生成缩略图
+```
+
+因为分片规则只依赖 md5、且相对路径直接就是 URL 路径，
+**前端不需要做任何分片相关改动**。
+
+### 修改图片路径的唯一入口
+
+`backend/app/sharding.py` 是分片规则的**唯一真源**，所有新增/移动图片
+都必须经过它：
+
+```python
+from .sharding import sharded_rel_path, thumbnail_path, resolve_image_path
+
+rel  = sharded_rel_path(md5, "jpg")                       # "7f/5d/7f5d....jpg"
+path = images_path.joinpath(*rel.split("/"))
+thumb = thumbnail_path(thumbnails_path, md5)
+```
+
+> 该文件的规则已与旧项目 `shard_migration.py` 逐条比对，
+> 对全部 434,027 条路径验证 **0 处不一致**。
 
 ---
 
@@ -598,6 +669,21 @@ Gallery.vue 收到 update-tags 事件
 4. **ETag / 版本缓存**：规则树可走缓存恢复逻辑
 5. **标签缓存**：`tags_dict` + 前端本地缓存双层加速
 6. **MD5 去重**：上传前预检查减少重复写入
+7. **目录分片**：43 万图片按 md5 两段式分片，单目录条目数 43 万 → 256
+8. **启动扫描快速路径**：磁盘文件数与库记录数一致时跳过逐文件校验
+   （100s → 8.5s）；扫描用 `os.scandir` 而非 `rglob`（60s → 8s）
+9. **不做无谓 MD5 重算**：文件名已是 32 位 md5 时直接采用，已入库的直接跳过，
+   避免启动时重复读取 134GB 数据
+
+### 实测数据
+
+| 操作 | 耗时 |
+| --- | --- |
+| 枚举一个一级分片（~1694 文件） | 0.016s |
+| 随机定位 5000 个 DB 路径 | 0.44s |
+| 启动扫描（快速路径） | 8.5s |
+| 回填 432,220 条 file_size | 197s |
+| 回填 432,220 条 width/height（24 线程） | 693s |
 
 ---
 
@@ -609,6 +695,8 @@ Gallery.vue 收到 update-tags 事件
 4. **SQL 参数化**：动态查询参数采用绑定方式
 5. **CAS 并发控制**：避免多人同时修改规则树时互相覆盖
 6. **冲突重试限制**：前端最多重试 3 次，避免死循环
+7. **路径越界防护**：`sharding.resolve_image_path()` 会校验解析结果
+   必须落在图片根目录内，防止 `../` 越权读取
 
 ---
 

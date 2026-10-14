@@ -24,6 +24,112 @@
 
 ---
 
+## 🔥 高频踩坑清单（改代码前先扫一眼）
+
+这些是本项目**实际踩过**的坑，每条都有数据和源码依据。
+AstrBot 插件相关的详细版见 [`ASTRBOT_PLUGIN.md`](ASTRBOT_PLUGIN.md)。
+
+### 通用：先验证，再下结论
+
+**最大的教训**：我曾基于源码推断「URL 一定是 https」，结果框架在中间
+偷偷把图片下载到本地并覆盖了字段，推断全错，还差点把 bug 说成"平台限制"。
+
+> **拿不准就写个只读钩子抓真实数据。** 24 条真实 dump 比看几小时源码有用。
+> 已保留诊断插件 `astrbot_plugin_bqbq_probe_single` 供随时使用。
+
+### ⚠️ 两套机器人的能力边界完全不同（别混淆）
+
+| | 官方机器人 `bv199` | 非官方 `bqbq` |
+| --- | --- | --- |
+| 框架 | AstrBot（`qq_official_webhook`） | NoneBot2（OneBot v11） |
+| **群内全部消息** | ❌ **收不到** | ✅ 能收到 |
+| 私聊 / @机器人 | ✅ | ✅ |
+| 收集方式 | **用户主动 @** | 可默默收集 |
+| 代码位置 | `AstrBot\data\plugins\astrbot_plugin_bqbq_collect` | `D:\bqbq_bot_dev\...\plugins\bqbq` |
+
+**QQ 官方机器人当前只能收到私聊和 @机器人的群消息。**
+
+⚠️ **注意原因**：不是技术不支持，而是**权限未开放**。
+API 是存在的（`GROUP_MESSAGE_CREATE` 全量模式），但
+[官方 FAQ](https://bot.q.qq.com/wiki/bot_FAQ/) 说明：
+
+> 公开全量使用：当前该能力正在对**企业开发者灰度**，
+> 后续会推全到个人认证，请耐心等待。
+
+且需要**群主**在手机 QQ 的群机器人设置里允许"接收群内全部消息"
+（是群主侧开关，不是开发者后台配置）。
+
+**所以：官方机器人上「自动收集群里所有表情包」当前做不到**，
+只能靠用户主动 @ 触发。若将来权限开放，这个结论要改。
+
+### ⚠️ 私聊与群聊的结构完全不同（写代码必须分开处理）
+
+| | **私聊** | **群聊（@机器人 / 引用）** |
+| --- | --- | --- |
+| `get_group_id()` | `''` 空 | 群 openid |
+| `raw_message_type` | `0` | `103`（引用） |
+| **components** | `[At, Plain, Image]` | `[Reply, At, Plain]` |
+| **图片在哪** | 顶层 `Image` | **`Reply.chain` 里** |
+| **`message_str`** | `''` / `'[表情]'` | `'bqbq收图'` |
+
+**两个后果**：
+
+1. **私聊没有文字** → 不能用触发词把关，否则永远收不到
+2. **群聊图片在 `Reply.chain`** → 只过滤顶层 `Image` 会漏
+
+所以：私聊发图即收；群聊必须带触发词 `bqbq收图`。
+
+### AstrBot：`should_call_llm()` 参数是**反的**
+
+```python
+# 消费端判断（stage.py:59）：and not event.call_llm
+event.should_call_llm(True)    # ✅ 跳过 LLM
+event.should_call_llm(False)   # ❌ 无效（默认值本来就是 False）
+```
+
+**方法名说"是否调用"，但要"禁止"必须传 `True`。**
+
+### AstrBot：框架会覆盖 Image 组件的字段
+
+`preprocess_stage` 把图片下载到 `data/temp/`，然后把
+`url` / `file` / `path` **全部覆盖成本地路径**。
+
+**普通消息应当直接读本地文件**，拿本地路径去 httpx 会抛
+`UnsupportedProtocol`。但**合并转发不会**被本地化（图片藏在 `Plain.text` 里）。
+
+### 解析逐行文本：**绝不能开 `re.DOTALL`**
+
+```python
+r"(?P<mid>.*?)"  + re.DOTALL   # ❌ 跨行吞掉下一条，md5 与 URL 张冠李戴
+r"[^\n]*?"                     # ✅ 限定同一行
+```
+
+**测试用例必须覆盖"缺字段"的情况**，否则测不出这类 bug。
+
+### 排查下载失败：两种情况必须区分
+
+| 来源 | 信号 | 含义 |
+| --- | --- | --- |
+| 原链接 `multimedia.nt.qq.com.cn` | `x-errno: -5503042` | rkey 过期 |
+| 构造 URL `gchat.qpic.cn` | `x-errno: -6101` | 存储层无此对象 |
+
+两种错误码**都在 `x-errno` 响应头里**，只看 JSON body 会漏。
+
+### 分页/滚动加载：必须补"内容是否可滚动"检查
+
+只挂 `scroll` 事件会在「一屏装得下」时**永久卡死**
+（`scrollHeight == clientHeight` → 没有滚动条 → 永不触发）。
+详见 [`BUILD_TROUBLESHOOTING.md`](BUILD_TROUBLESHOOTING.md) 第三节。
+
+### Windows 环境
+
+- **含中文的 PowerShell 脚本必须存成 UTF-8 with BOM**，否则 PS 5.1 读成乱码
+- **`npm run build` 需要 Node ≥ 26**，Node 24.12.0 会崩（`0xC0000409`）
+- 杀进程前**先查命令行和端口占用**：`Get-CimInstance Win32_Process`。
+  我曾误判 `python main.py` 是自己的残留，实际是**别人的 AstrBot 和公网 API**
+
+---
+
 ## 语言偏好
 
 本项目使用 **中文** 进行问答、说明和大部分注释。请始终使用中文回复。
@@ -90,9 +196,61 @@ BQBQ v2（表情标签）是一个基于**语义森林**的图片标签管理系
 
 ### 相关文档
 
+- `SHARDING.md` - **43 万张图片的分片接入说明（重要，改动图片路径前必读）**
+- `PAGINATION_PERF.md` - 分页性能优化、时间戳回填、语义修复
+- `BUILD_TROUBLESHOOTING.md` - **构建崩溃根因（Node 版本）+ 缩略图批量加载**
+- `R2_UPLOAD.md` - R2 上传与 CDN 配置
 - `ARCHITECTURE.md` - 架构设计与流程图
 - `MIGRATION_STATUS.md` - 迁移状态、差异说明、历史整理
 - `frontend/README.md` - 前端项目说明
+
+---
+
+## ⚠️ 环境要求：Node 必须 ≥ 26
+
+**Node 24.12.0 在 Windows 上会导致 `npm run build` 崩溃**
+（退出码 `0xC0000409`，无错误信息）。
+
+| Node | `npm run build` |
+| --- | --- |
+| 24.12.0 | ❌ 崩溃（9/9 稳定复现） |
+| **26.7.0** | ✅ 成功 |
+
+升级：`winget install --id OpenJS.NodeJS`
+
+> 注意包名是 `OpenJS.NodeJS`，不是 `OpenJS.NodeJS.22` 这类固定大版本。
+> 详细排查过程见 `BUILD_TROUBLESHOOTING.md`。
+
+`npm run dev`（热更新）不受此问题影响。
+
+---
+
+## ⚠️ 图片存储：md5 两段式分片（必读）
+
+当前 `meme_images` / `meme_images_thumbnail` 采用的是 **Git 对象库风格的分片目录**：
+
+```text
+meme_images/<md5 前2位>/<md5 第3-4位>/<md5>.<ext>
+meme_images/7f/5d/7f5d377f8dae018434c9b5638d4a5cec.gif
+```
+
+原因：数据集有 **43 万张图片**，平铺在单目录会让 Windows 枚举极慢。
+
+### 三条硬性约定
+
+1. **`images.filename` 存分片相对路径**（正斜杠分隔），例如 `7f/5d/xxx.gif`。
+   不要存绝对路径，也不要只存文件名。
+2. **任何新增/移动图片都必须调用 `app/sharding.py`**：
+   ```python
+   from .sharding import sharded_rel_path, thumbnail_path, resolve_image_path
+   rel  = sharded_rel_path(md5, ext)        # 入库用
+   path = images_path.joinpath(*rel.split("/"))
+   ```
+   禁止再写 `images_path / f"{md5}.{ext}"`，否则根目录会重新堆积。
+3. **不要用 `glob("*.jpg")` 扫描图片目录**，必须递归
+   （`os.scandir` 两层或 `rglob`），否则一张都扫不到。
+
+详细说明、验证方式与踩坑记录见 `SHARDING.md`。
 
 ---
 
@@ -112,6 +270,46 @@ npm run dev
 # 访问: http://localhost:5173
 ```
 
+### 一键启动（推荐，Windows）
+
+在项目根目录执行：
+
+```powershell
+.\start.ps1              # build 模式（默认，公网访问用这个）
+.\start.ps1 -DevMode     # dev 模式（改前端代码时用）
+```
+
+| 模式 | 访问地址 | 前端资源加载量 |
+| --- | --- | --- |
+| **build**（默认） | `http://127.0.0.1:8000/g2/` | **1 个 JS，gzip 后约 104 KiB** |
+| dev | `http://localhost:5173/g2/` | 28 个模块，约 2.6 MB |
+
+**公网访问必须用 build 模式** —— dev 模式下浏览器要逐个拉 `.ts`/`.vue` 源码，
+在实测约 0.6 Mbps 的公网链路上要 35 秒（build 只要 2 秒）。
+
+build 模式下前端由**后端 8000 直接托管**，不需要再跑 5173，
+所以 nginx 的上游也要指向 8000（`https://bqbq.mmc199.com/g2/`）。
+
+其他参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `-DevMode` | 前端跑 Vite dev server（5173），改代码热更新 |
+| `-Build` | 强制重新构建前端 |
+| `-BackendOnly` / `-FrontendOnly` | 只启动其中一个 |
+| `-Force` | 端口被占用时自动结束占用进程 |
+
+脚本还会：检查 `python`/`node`、前端依赖不存在时自动 `npm install`、
+**检测源码是否比 build 产物新**（有则自动重建）。
+
+详见 `FRONTEND_DEPLOY.md`。
+
+> ⚠️ 该脚本含中文，已保存为 **UTF-8 with BOM**。
+> 若用编辑器重存，请保留 BOM，否则 Windows PowerShell 5.1
+> 会把中文读成乱码并报出莫名其妙的「语法错误」。
+
+停止服务：直接关闭对应窗口即可。
+
 ---
 
 ## 当前项目结构
@@ -121,14 +319,22 @@ bqbq_v2/
 ├── CLAUDE.md                 # AI 协作指南（本文件）
 ├── ARCHITECTURE.md           # 架构与流程文档
 ├── MIGRATION_STATUS.md       # 迁移状态与差异说明
+├── SHARDING.md               # 43 万图片分片接入说明
+├── R2_UPLOAD.md              # R2 上传与 CDN 配置说明
+├── start.ps1                 # 一键启动（前后端各开一个窗口）
+├── scripts/                  # 运维脚本（R2 上传等）
 │
 ├── backend/                  # FastAPI 后端
 │   ├── run.py               # 启动脚本
 │   ├── requirements.txt     # Python 依赖
-│   ├── meme.db              # SQLite 数据库
+│   ├── meme.db              # SQLite 数据库（434,810 行，含 43 万图片索引）
+│   ├── merge_into_v2.py     # 【新增】把旧库 43 万数据合并进 v2
+│   ├── normalize_filenames.py  # 【新增】平铺 filename -> 分片路径
+│   ├── backfill_metadata.py    # 【新增】回填 file_size / width / height
 │   └── app/
 │       ├── main.py          # 应用入口 / 静态挂载 / 缩略图 / 启动任务
 │       ├── config.py        # 配置管理
+│       ├── sharding.py      # 【新增】md5 分片路径规则（唯一真源）
 │       ├── database.py      # 数据库连接 / 初始化 / tags_dict 重建
 │       ├── models/
 │       │   ├── image.py     # 图片 / 搜索模型
@@ -366,6 +572,14 @@ bqbq_v2/
 4. 规则树读取结果仍偏向旧项目扁平结构，前端在 `useApi.ts` 内做树形组装。
 5. `MemeCard.vue` 当前用于“点击外部关闭编辑”的是 `editorRef`，**卡片根节点已不再依赖额外模板 ref**。
 6. `backend/app/main.py` 在启动时会扫描图片目录、重建 `tags_dict`，并启动后台线程周期刷新。
+7. **图片目录是 md5 两段式分片结构**，`images.filename` 存分片相对路径。
+   `backend/meme_images` 与 `backend/meme_images_thumbnail` 是指向
+   `D:\bqbq_backend\` 下真实目录的**符号链接**。
+8. 数据库共 **434,810 行**，其中 181 行有标签（多数图片尚未打标签）。
+9. 启动扫描在「磁盘文件数 == 库记录数」时会走快速路径跳过逐文件校验；
+   需要强制核对时设置环境变量 `BQBQ_FORCE_FOLDER_SCAN=1`。
+10. 数据集里有 HEIC/HEIF 图片，`main.py` 与 `routers/images.py` 都已注册
+    `pillow_heif.register_heif_opener()`，**不要删掉这段注册**，否则那些图会生成不了缩略图。
 
 ---
 

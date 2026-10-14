@@ -14,6 +14,10 @@ build/
 # Database
 *.db
 *.sqlite3
+# 数据库备份：本地救急/回滚用，含真实图片元数据，不上传
+*.db.bak*
+*.db.backup*
+*.db.old
 
 # Images (user data, symlinks)
 backend/images/
@@ -32,3 +36,30 @@ Thumbs.db
 
 # Logs
 *.log
+
+# === 凭据 / 密钥（绝对不要提交）===
+# Cloudflare R2 / API 凭据
+.r2_token.json
+.r2_access_key.json
+*_credentials.json
+credentials.json
+
+# 前端环境变量（可能含密钥或内部地址）
+# 注意：.env.example 是模板，要保留在版本库里
+.env
+.env.local
+.env.*.local
+!.env.example
+!frontend/.env.example
+
+# 备份目录
+backup_before_merge/
+backup_before_sharding/
+
+# 上传相关的临时产物
+upload_baseline.json
+_local_shard_counts.json
+r2_*_upload.log
+backfill_dims_log.txt
+merge_log.txt
+

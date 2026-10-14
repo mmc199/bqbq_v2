@@ -55,6 +55,18 @@ class SearchRequest(BaseModel):
     exclude_extensions: list[str] = Field(default_factory=list, description="排除的文件扩展名")
     expand: bool = Field(default=True, description="是否启用关键词膨胀")
 
+    # 游标分页（可选）。填了就走 keyset 分页，完全跳过 OFFSET。
+    #
+    # 背景：OFFSET 越大越慢（SQLite 必须扫过并丢弃前 N 行），
+    # 43 万行下翻到末尾要 600ms+。keyset 分页用「上一页最后一条的位置」
+    # 直接定位，任意深度都是 O(1)。
+    #
+    # 由于时间排序的键是 (created_at, id) 复合键，
+    # 游标必须**同时**带 cursor_ts 和 cursor_id，两个一起回传。
+    # 与 page 参数二选一：填了游标就忽略 page。
+    cursor_id: int | None = Field(default=None, description="游标分页：上一页最后一条的 id")
+    cursor_ts: str | None = Field(default=None, description="游标分页：上一页最后一条的 created_at")
+
 
 class SearchResultItem(BaseModel):
     """旧项目搜索结果条目"""

@@ -288,6 +288,31 @@ function handlePointerUp(e: PointerEvent) {
 
 function toggleCollapse() {
   isCollapsed.value = !isCollapsed.value
+  // 记下"刚刚展开"的时刻，供 HQ 按钮防穿透使用（见 shouldIgnoreGhostClick）
+  if (!isCollapsed.value) {
+    lastExpandAt = Date.now()
+  }
+}
+
+/**
+ * 展开动画后，同一次触摸的"尾随点击"会穿透到刚渲染出来的 #fab-hq 上。
+ *
+ * 【成因】#fab-expand-btn 的展开动作由 pointerup 触发（拖拽逻辑里
+ * preventDefault 掉了原生 click）。pointerup 时 #fab-container 立刻从
+ * hidden 变可见，#fab-hq 恰好落在手指原本的位置；浏览器随后补发的那次
+ * click 就落到了 HQ 上，顺带触发 handleToggleHQ -> searchImages 重新搜索。
+ *
+ * 【修法】不改拖拽逻辑，只在这里按"距上次展开的时间"做一层拦截：
+ * 展开后极短窗口内的 HQ 点击一律视为穿透，直接丢弃。
+ */
+const GHOST_CLICK_WINDOW_MS = 350
+let lastExpandAt = 0
+
+function shouldIgnoreGhostClick(): boolean {
+  // 仅在"已展开"状态下拦截；收起时的正常点击不受影响
+  if (isCollapsed.value) return false
+  if (lastExpandAt === 0) return false
+  return Date.now() - lastExpandAt < GHOST_CLICK_WINDOW_MS
 }
 
 function toggleTrashMode() {
@@ -299,6 +324,8 @@ function toggleExpansion() {
 }
 
 function toggleHQMode() {
+  // 丢弃"展开后尾随点击"造成的误触（详见 shouldIgnoreGhostClick 注释）
+  if (shouldIgnoreGhostClick()) return
   emit('toggleHQ', !props.isHQMode)
 }
 
