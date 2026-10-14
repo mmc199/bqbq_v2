@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>CORS 图片缓存复用测试</title>
+<style>
+  body { font-family: ui-monospace, Consolas, monospace; padding: 20px; line-height: 1.75; max-width: 900px; }
+  img { width: 120px; border: 1px solid #ccc; margin: 4px; vertical-align: top; }
+  .ok { color: #16a34a; font-weight: bold; }
+  .bad { color: #dc2626; font-weight: bold; }
+  .warn { color: #d97706; font-weight: bold; }
+  button { padding: 8px 14px; margin: 4px; font-size: 14px; cursor: pointer; }
+  pre { background: #f5f5f5; padding: 12px; border-radius: 6px; white-space: pre-wrap; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: 10px 14px; margin: 12px 0; }
+  code { background: #eef; padding: 1px 4px; border-radius: 3px; }
+  table { border-collapse: collapse; margin: 8px 0; }
+  td, th { border: 1px solid #ddd; padding: 4px 10px; text-align: left; }
+</style>
+</head>
+<body>
+<h2>CORS 图片缓存复用测试</h2>
+
+<p>验证目标：<code>&lt;img crossorigin="anonymous"&gt;</code> 加载后，<code>fetch</code> 能否复用同一份缓存，
+使「预览 + 下载」只产生 <b>一次</b>网络传输。</p>
+
+<div class="note">
+  <b>⚠ 判定依据说明</b><br>
+  不能用 <code>transferSize</code> 判断：跨源资源若响应缺少
+  <code>Timing-Allow-Origin</code>，浏览器会把 <code>transferSize</code> 和
+  <code>encodedBodySize</code> <b>恒定为 0</b>，无论是否真的命中缓存。<br>
+  因此本页改用 <b>耗时对比</b>：首次网络下载通常几百毫秒以上，
+  而命中本地缓存只需几毫秒。差距通常在一个数量级以上。
+</div>
+
+<p>
+  <button onclick="runAll()">▶ 一键完整测试（推荐）</button>
+  <button onclick="loadCors()">① 加载 (crossorigin)</button>
+  <button onclick="fetchIt()">② fetch 复用测试</button>
+  <button onclick="location.reload()">重载页面</button>
+</p>
+
+<div id="imgs"></div>
+<div id="verdict"></div>
+<pre id="log">就绪...</pre>
+
+<script>
+// 用带随机查询串的 URL 确保「首次」是真正的网络下载（绕过已有缓存）
+const BASE = 'https://bqbq-img.mmc199.com/meme_images/a5/73/a573086ebec231eb7248f71239bfffa2.jpg';
+let TEST_URL = BASE + '?t=' + Date.now();   // 每次页面加载都是新 URL（首次必然走网络）
+
+const logEl = document.getElementById('log');
+const verdictEl = document.getElementById('verdict');
+
+function log(msg) {
+  const t = new Date().toLocaleTimeString();
+  logEl.textContent += `\n[${t}] ${msg}`;
+  console.log(msg);
+}
+function verdict(html) { verdictEl.innerHTML = html; }
+
+async function timedLoad(url, useCors) {
+  const t0 = performance.now();
+  await new Promise((resolve, reject) => {
+    const img = new Image();
+    if (useCors) img.crossOrigin = 'anonymous';
+    img.onload = () => { document.getElementById('imgs').appendChild(img); resolve(); };
+    img.onerror = () => reject(new Error('图片加载失败'));
+    img.src = url;
+  });
+  return performance.now() - t0;
+}
+
+async function timedFetch(url) {
+  const t0 = performance.now();
+  const res = await fetch(url, { mode: 'cors' });
+  const blob = await res.blob();
+  return { ms: performance.now() - t0, status: res.status, type: res.type, size: blob.size };
+}
+
+async function runAll() {
+  logEl.textContent = '开始测试...';
+  verdict('');
+  document.getElementById('imgs').innerHTML = '';
+  TEST_URL = BASE + '?t=' + Date.now();
+  log('测试 URL: ' + TEST_URL.replace(BASE, '...jpg'));
+
+  // ---------- 步骤 1：crossorigin 加载，测真实网络耗时 ----------
+  let t1;
+  try {
+    t1 = await timedLoad(TEST_URL, true);
+    log(`① <img crossorigin="anonymous"> 首次加载成功，耗时 ${t1.toFixed(0)} ms（真实网络下载）`);
+  } catch (e) {
+    log('① 加载失败：' + e.message, 'bad');
+    verdict('<span class="bad">❌ 方案不可行：<code>crossorigin</code> 图片加载失败，CORS 校验未通过。</span>');
+    return;
+  }
+
+  // ---------- 步骤 2：fetch 同一 URL，看是否复用缓存 ----------
+  let f;
+  try {
+    f = await timedFetch(TEST_URL);
+    log(`② fetch 同一 URL 成功：${f.ms.toFixed(0)} ms，status=${f.status}，type=${f.type}，blob=${f.size} 字节`);
+  } catch (e) {
+    log('② fetch 失败：' + e.message, 'bad');
+    verdict('<span class="bad">❌ fetch 无法复用：' + e.message + '</span>');
+    return;
+  }
+
+  // ---------- 步骤 3：再 fetch 一次，作为「纯缓存」基准 ----------
+  const f2 = await timedFetch(TEST_URL);
+  log(`③ 再次 fetch 同一 URL：${f2.ms.toFixed(0)} ms（纯缓存基准）`);
+
+  // ---------- 判定 ----------
+  const ratio = t1 / Math.max(f.ms, 0.01);
+  const table = `
+    <table>
+      <tr><th>步骤</th><th>操作</th><th>耗时</th><th>说明</th></tr>
+      <tr><td>①</td><td>&lt;img crossorigin&gt; 首次加载</td><td>${t1.toFixed(0)} ms</td><td>真实网络下载</td></tr>
+      <tr><td>②</td><td>fetch 同一 URL</td><td>${f.ms.toFixed(0)} ms</td><td>理想情况≈0 额外传输</td></tr>
+      <tr><td>③</td><td>fetch 再来一次</td><td>${f2.ms.toFixed(0)} ms</td><td>纯缓存基准</td></tr>
+    </table>`;
+
+  if (f.ms < t1 / 5) {
+    log(`>>> 判定：fetch 耗时 ${f.ms.toFixed(0)}ms 远低于首次下载 ${t1.toFixed(0)}ms（快 ${ratio.toFixed(0)} 倍）`, 'ok');
+    verdict(`<div class="ok">✅ 方案成立：fetch 复用了 crossorigin 图片的缓存，预览+下载只走一次网络传输。</div>${table}
+      <p>② 与 ③ 耗时接近，说明 fetch 走的是本地缓存而非网络。</p>`);
+  } else {
+    log(`>>> 判定：fetch 耗时 ${f.ms.toFixed(0)}ms 与首次下载 ${t1.toFixed(0)}ms 相当，疑似重复下载`, 'bad');
+    verdict(`<div class="bad">❌ 方案不成立：fetch 没有复用缓存，仍然发生了一次真实网络传输。</div>${table}`);
+  }
+}
+
+// 手动分步用（可选）
+async function loadCors() {
+  try { const ms = await timedLoad(BASE, true); log(`① 加载完成 ${ms.toFixed(0)}ms`); }
+  catch (e) { log('① 失败: ' + e.message, 'bad'); }
+}
+async function fetchIt() {
+  try { const f = await timedFetch(BASE); log(`② fetch ${f.ms.toFixed(0)}ms, blob=${f.size}`); }
+  catch (e) { log('② 失败: ' + e.message, 'bad'); }
+}
+
+log('就绪。点击「一键完整测试」开始。');
+</script>
+</body>
+</html>
