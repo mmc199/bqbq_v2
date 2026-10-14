@@ -22,6 +22,7 @@ from ..database import get_connection, get_rules_version, increment_rules_versio
 from ..image_format import resolve_upload_ext
 from ..models.image import ImageCreate, ImageResponse, ImageUpdate
 from ..sharding import sharded_rel_path, thumbnail_path, resolve_image_path
+from ..thumbnail import create_thumbnail_for
 from ..r2_sync import sync_async
 
 router = APIRouter()
@@ -38,17 +39,16 @@ class CheckMD5Request(BaseModel):
     refresh_time: bool = False
 
 
-def save_thumbnail(image_bytes: bytes, md5: str) -> None:
-    """生成缩略图（与旧项目一致的命名，按 md5 分片镜像落位）"""
-    try:
-        img = Image.open(io.BytesIO(image_bytes))
-        img.thumbnail((settings.thumbnail_max_size, settings.thumbnail_max_size))
-        thumb_path = thumbnail_path(Path(settings.thumbnails_path), md5)
-        thumb_path.parent.mkdir(parents=True, exist_ok=True)
-        img.convert("RGB").save(thumb_path, format="JPEG", quality=85)
-    except Exception:
-        # 缩略图失败不影响主流程
-        pass
+def save_thumbnail(original_path: Path, md5: str) -> None:
+    """为刚落盘的原图生成缩略图（按 md5 分片镜像落位）。
+
+    统一调用 app.thumbnail 的实现 —— 与"访问时按需生成"共用同一套规则
+    （随机抽取动图帧 / LANCZOS / optimize=True），避免同一张动图因导入
+    路径不同而产生两种封面。
+
+    缩略图失败不影响主流程（图片已入库，前端会回退到原图接口）。
+    """
+    create_thumbnail_for(original_path, md5)
 
 
 @router.get("", response_model=list[ImageResponse])
@@ -292,7 +292,7 @@ async def upload_image(file: UploadFile = File(...)):
         file_path.write_bytes(image_bytes)
 
         # 生成缩略图（分片镜像结构）
-        save_thumbnail(image_bytes, md5)
+        save_thumbnail(file_path, md5)
 
         # 写入数据库（filename 存分片相对路径）
         cursor.execute(

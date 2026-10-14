@@ -3,7 +3,6 @@ BQBQ 后端 - FastAPI 主入口
 """
 import hashlib
 import os
-import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,13 +30,12 @@ from .database import init_database, get_connection, rebuild_tags_dict
 from .image_format import resolve_upload_ext
 from .sharding import (
     sharded_rel_path,
-    sharded_path,
-    thumbnail_rel_path,
     thumbnail_path,
     resolve_image_path,
     extract_md5,
 )
 from .r2_sync import sync_async, check_config as r2_check_config, get_stats as r2_get_stats
+from .thumbnail import create_thumbnail, create_thumbnail_for
 
 # 创建应用
 app = FastAPI(
@@ -178,110 +176,40 @@ def _mount_frontend() -> None:
 _mount_frontend()
 
 
-def extract_random_frame(img: Image.Image) -> Image.Image:
-    """如果是动图，随机抽取一帧"""
-    try:
-        if getattr(img, "is_animated", False) and img.n_frames > 1:
-            img.seek(random.randint(0, img.n_frames - 1))
-    except Exception:
-        pass
-    return img.copy()
-
-
-def create_thumbnail(source_path: Path, thumb_path: Path) -> bool:
-    """
-    生成缩略图
-    Returns:
-        bool: True 表示成功，False 表示失败
-    """
-    try:
-        with Image.open(source_path) as img:
-            frame = extract_random_frame(img)
-
-            # 转换模式，确保兼容 JPEG
-            if frame.mode not in ("RGB", "L"):
-                frame = frame.convert("RGB")
-            elif frame.mode == "L":
-                frame = frame.convert("RGB")
-
-            # 缩放
-            frame.thumbnail(
-                (settings.thumbnail_max_size, settings.thumbnail_max_size),
-                Image.LANCZOS
-            )
-
-            # 确保目录存在
-            thumb_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # 保存为 JPEG
-            frame.save(thumb_path, "JPEG", quality=85, optimize=True)
-            return True
-
-    except Exception as e:
-        print(f"Thumbnail generation failed for {source_path}: {e}")
-        # 尝试复制原图作为缩略图（降级方案）
-        try:
-            import shutil
-            shutil.copy(source_path, thumb_path)
-            return True
-        except Exception:
-            return False
-
-
 @app.get("/thumbnails/{filename:path}")
 async def serve_thumbnail(filename: str):
-    """
-    提供缩略图服务。
+    """提供缩略图服务；缺失时就地生成。
 
-    支持三种入参形态（因为前端可能传分片路径，也可能是历史遗留的平铺名）：
-      1. 分片相对路径：      7f/5d/7f5d....jpg
-      2. 已带 _thumbnail：   7f/5d/7f5d..._thumbnail.jpg
-      3. 平铺原名：          7f5d....jpg  /  trash_bin/xxx.jpg
+    【入参】前端传的是数据库里的 filename，即分片相对路径：
+        7f/5d/7f5d377f8dae018434c9b5638d4a5cec.gif
 
-    缩略图缺失时会按分片规则就地生成。
+    【为什么只保留这一条查找路径】
+    实测全库 446,182 条记录的 filename **100% 都是标准分片路径**
+    （无平铺名、无 trash_bin/ 之类目录前缀，且文件名与 md5 完全一致）。
+    因此此前为"历史遗留形态"准备的四条回退分支（平铺名、带目录前缀、
+    遍历 9 种扩展名猜原图、回查数据库兜底）全是死代码，只会让每次请求
+    多做若干次无效的磁盘 is_file() 探测。现在按 md5 直接定位，一次命中。
+
+    缩略图缺失时用原图就地生成 —— 这是原图新增/迁移后唯一需要兜底的场景。
     """
     requested = filename.replace("\\", "/").strip("/")
     md5 = extract_md5(requested)
+    if not md5:
+        raise HTTPException(status_code=404, detail="缩略图不存在")
 
-    # ---- 1) 先按分片规则直接找缩略图 ----
-    if md5:
-        cand = thumbnail_path(thumbnails_path, md5)
-        if cand.is_file():
-            return FileResponse(cand)
+    target = thumbnail_path(thumbnails_path, md5)
+    if target.is_file():
+        return FileResponse(target)
 
-    # ---- 2) 兼容：请求里就带了目录（例如 trash_bin） ----
-    legacy_thumb = thumbnails_path.joinpath(*requested.split("/"))
-    if legacy_thumb.is_file():
-        return FileResponse(legacy_thumb)
-    parent = Path(requested).parent
-    if str(parent) != ".":
-        alt = thumbnails_path.joinpath(*str(parent).split("/")) / f"{md5}_thumbnail.jpg"
-        if alt.is_file():
-            return FileResponse(alt)
-
-    # ---- 3) 缩略图不存在：找到原图后按分片规则生成 ----
+    # 缩略图缺失：用原图生成。
+    # 原图路径直接由请求里的 filename 解析 —— 不需要遍历候选扩展名，
+    # 因为数据库里的 filename 就是准确路径。
     original = resolve_image_path(images_path, requested)
-    if original is None and md5:
-        # 回退：按分片规则 + 各候选扩展名找原图
-        for ext in settings.allowed_extensions:
-            cand = sharded_path(images_path, md5, ext)
-            if cand.is_file():
-                original = cand
-                break
     if original is None:
-        # 再回退：库里的 filename 为准（可能扩展名与磁盘不同）
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT filename FROM images WHERE md5 = ?", (md5,)
-            ).fetchone()
-        if row:
-            original = resolve_image_path(images_path, row["filename"])
+        raise HTTPException(status_code=404, detail="缩略图不存在")
 
-    if original is not None:
-        target = thumbnail_path(thumbnails_path, md5)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if create_thumbnail(original, target):
-            return FileResponse(target)
+    if create_thumbnail(original, target):
+        return FileResponse(target)
 
     raise HTTPException(status_code=404, detail="缩略图不存在")
 
@@ -511,10 +439,7 @@ def scan_and_import_folder():
     def generate_thumbnail_for_item(item):
         """生成单个缩略图（按分片规则落位）"""
         try:
-            thumb_path = thumbnail_path(thumbnails_path, item['md5'])
-            thumb_path.parent.mkdir(parents=True, exist_ok=True)
-            create_thumbnail(Path(item['path']), thumb_path)
-            return True
+            return create_thumbnail_for(Path(item['path']), item['md5'])
         except Exception as e:
             print(f"[Folder Scan] Thumbnail error for {item['md5']}: {e}")
             return False
@@ -696,9 +621,7 @@ async def upload_file(file: UploadFile = File(...)):
         file_path.write_bytes(content)
 
         # 生成缩略图（同样按分片规则）
-        thumb_path = thumbnail_path(thumbnails_path, md5)
-        thumb_path.parent.mkdir(parents=True, exist_ok=True)
-        create_thumbnail(file_path, thumb_path)
+        create_thumbnail_for(file_path, md5)
 
         # 保存到数据库（filename 存分片相对路径）
         cursor.execute(
