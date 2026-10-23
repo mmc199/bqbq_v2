@@ -15,6 +15,7 @@ const EXPANSION_KEY = 'bqbq_expansion_enabled'
 const FAB_COLLAPSED_KEY = 'bqbq_fab_collapsed'
 const FAB_MINI_POSITION_KEY = 'bqbq_fab_mini_position'
 const TREE_EXPANDED_KEY = 'bqbq_tree_expanded'
+const CART_KEY = 'bqbq_cart_md5s'
 
 const TAG_CACHE_TTL = 10 * 60 * 1000 // 10 分钟缓存有效期
 
@@ -110,21 +111,39 @@ export const useGlobalStore = defineStore('global', () => {
   // 购物车
   // -------------------------------------------------------------------------
   //
-  // 【为什么放 store】卡片上的购物车按钮、FAB 的角标、购物车面板
-  // 三处都要读同一份数据，组件间传递太啰嗦。
-  // 数据本身存在后端（bot 需要按 openid 取），这里只是内存缓存。
-  const cartMd5s = ref<string[]>([])
-  const cartItems = ref<Array<{
-    md5: string
-    filename: string
-    tags: string[]
-    thumb_url: string
-  }>>([])
+  // 【纯前端持久化】购物车只存 md5 列表到 localStorage，**不落后端**。
+  //
+  // 理由：购物车是"挑选阶段"。若每点一次都请求后端，在 860ms RTT 的
+  // 穿透链路上会卡得没法用；而且后端表里会堆满半成品数据。
+  // 只有用户点「发送到 QQ」时才把整份 md5 列表一次性 POST /api/cart/send。
+  //
+  // 【为什么只存 md5】图片的 filename / tags 可能被修改（打标签、改名），
+  // 缓存这些字段会过期。渲染时按 md5 现查（store 里已有图片索引）。
+  const cartMd5s = ref<string[]>(
+    (() => {
+      try {
+        const raw = localStorage.getItem(CART_KEY)
+        const arr = raw ? JSON.parse(raw) : []
+        return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : []
+      } catch {
+        return []
+      }
+    })()
+  )
 
   const cartCount = computed(() => cartMd5s.value.length)
   function isInCart(md5: string) {
     return cartMd5s.value.includes(md5)
   }
+
+  // 购物车变化时持久化 —— 刷新页面后仍在
+  watch(cartMd5s, (val) => {
+    try {
+      localStorage.setItem(CART_KEY, JSON.stringify(val))
+    } catch (e) {
+      console.warn('保存购物车失败:', e)
+    }
+  }, { deep: true })
 
   watch(preferHQ, (val) => saveBooleanToStorage(localStorage, PREFER_HQ_KEY, val))
   watch(isExpansionEnabled, (val) => saveBooleanToStorage(sessionStorage, EXPANSION_KEY, val))
@@ -265,23 +284,16 @@ export const useGlobalStore = defineStore('global', () => {
     authGranted.value = v
   }
 
-  function setCart(items: Array<{ md5: string; filename: string; tags: string[]; thumb_url: string }>) {
-    cartItems.value = items
-    cartMd5s.value = items.map(i => i.md5)
-  }
-
   function addCartMd5(md5: string) {
     if (!cartMd5s.value.includes(md5)) cartMd5s.value.push(md5)
   }
 
   function removeCartMd5(md5: string) {
-    cartMd5s.value = cartMd5s.value.filter(m => m !== md5)
-    cartItems.value = cartItems.value.filter(i => i.md5 !== md5)
+    cartMd5s.value = cartMd5s.value.filter((m) => m !== md5)
   }
 
   function clearCartState() {
     cartMd5s.value = []
-    cartItems.value = []
   }
 
   // 初始化
@@ -326,10 +338,8 @@ export const useGlobalStore = defineStore('global', () => {
     setAuthGranted,
     // 购物车
     cartMd5s,
-    cartItems,
     cartCount,
     isInCart,
-    setCart,
     addCartMd5,
     removeCartMd5,
     clearCartState,

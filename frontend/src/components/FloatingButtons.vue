@@ -17,6 +17,7 @@ import TagInput from '@/components/TagInput.vue'
 import { useGlobalStore } from '@/stores/useGlobalStore'
 import { useAuthApi, useCartApi } from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
+import { getThumbBlobUrl, preloadThumbnails } from '@/composables/useThumbBatch'
 
 const SLIDER_MAX_VISUAL = 6
 const INFINITY_DISPLAY = '∞'
@@ -171,51 +172,73 @@ function toggleLoginPanel() {
 // ===========================================================================
 //  购物车
 // ===========================================================================
+//
+// 【纯前端存储】加/删都只改 store（localStorage），不发请求。
+// 【缩略图走批量 zip】与图片网格一致，用 /thumbnails/batch 一次取回全部，
+//   而不是每张缩略图一个 <img src> 请求（穿透链路上会非常慢）。
+// 【响应式】cartMd5s 是 store 里的 ref，卡片上点了购物车，
+//   这里的 cartCount 和面板列表会立刻更新，无需重新打开面板。
 
-const cartItems = computed(() => globalStore.cartItems)
 const cartCount = computed(() => globalStore.cartCount)
+const cartMd5s = computed(() => globalStore.cartMd5s)
 
-/** 从后端拉取购物车（打开面板或操作后调用） */
-async function refreshCart() {
-  if (!isLoggedIn.value) {
-    globalStore.clearCartState()
-    return
-  }
-  const r = await cartApi.list(globalStore.clientId)
-  if (r.success && r.data) {
-    globalStore.setCart(r.data.items || [])
+// md5 -> 缩略图 blob URL（批量取回后填充）
+const cartThumbs = ref<Record<string, string>>({})
+const cartThumbLoading = ref(false)
+
+/** 批量加载购物车里的缩略图（走 /thumbnails/batch，一次 zip 取回） */
+async function loadCartThumbs() {
+  const missing = cartMd5s.value.filter((m) => !cartThumbs.value[m])
+  if (missing.length === 0) return
+
+  cartThumbLoading.value = true
+  try {
+    // 与图片网格共用同一份 blob 缓存：已加载过的直接命中，不会重复请求
+    await preloadThumbnails(missing)
+    const next = { ...cartThumbs.value }
+    for (const md5 of missing) {
+      const url = getThumbBlobUrl(md5)
+      if (url) next[md5] = url
+    }
+    cartThumbs.value = next
+  } catch (e) {
+    console.warn('[Cart] 缩略图批量加载失败', e)
+  } finally {
+    cartThumbLoading.value = false
   }
 }
 
-async function removeFromCart(md5: string) {
-  // 先乐观移除（UI 立即响应），失败再回滚并重新拉取
-  const backup = [...globalStore.cartMd5s]
+/** 购物车变化时增量补图（只请求新增的 md5） */
+watch(
+  () => cartMd5s.value.join(','),
+  () => {
+    if (showCartPanel.value) void loadCartThumbs()
+  }
+)
+
+/** 单独移出（纯本地操作） */
+function removeFromCart(md5: string) {
   globalStore.removeCartMd5(md5)
-
-  const r = await cartApi.remove(globalStore.clientId, md5)
-  if (!r.success) {
-    // 回滚
-    backup.forEach(m => globalStore.addCartMd5(m))
-    toast.error(r.error || '移出失败，请重试')
-    return
-  }
-  // 以服务端为准刷新一次，避免本地与服务端不一致
-  await refreshCart()
 }
 
-async function clearCart() {
-  await cartApi.clear(globalStore.clientId)
+/** 清空（纯本地操作） */
+function clearCart() {
   globalStore.clearCartState()
   toast.info('购物车已清空')
 }
 
-/** 把购物车推进待取回队列，提示用户私聊 bot */
+/** 把购物车 md5 列表一次性提交给后端，供 bot 取回 */
 async function sendCartToQQ() {
   if (cartCount.value === 0) {
     toast.info('购物车是空的')
     return
   }
-  const r = await cartApi.send(globalStore.clientId)
+  if (!isLoggedIn.value) {
+    toast.warning('请先登录 QQ（点击企鹅按钮）')
+    return
+  }
+
+  const r = await cartApi.send(globalStore.clientId, cartMd5s.value)
   if (r.success && r.data?.success) {
     toast.success(r.data.message || '已加入待取回队列')
   } else {
@@ -228,7 +251,8 @@ function toggleCartPanel() {
   closeAllPanels()
   showCartPanel.value = next
   if (next) {
-    refreshCart()
+    // 打开时批量补图。已加载过的会命中 blob 缓存，不会重复请求。
+    void loadCartThumbs()
   }
 }
 
@@ -558,14 +582,9 @@ onMounted(() => {
     miniStripTop.value = DEFAULT_MINI_TOP
   }
 
-  // 查询登录态 + 购物车（client_id 已通过验证的话直接显示）
+  // 查询登录态（购物车是 localStorage 里的，无需从后端拉）
   authApi.checkMe(globalStore.clientId).then((r) => {
-    if (r.success && r.data?.granted) {
-      globalStore.setAuthGranted(true)
-      refreshCart()
-    } else {
-      globalStore.setAuthGranted(false)
-    }
+    globalStore.setAuthGranted(r.success && !!r.data?.granted)
   })
 })
 
@@ -836,19 +855,29 @@ onBeforeUnmount(() => {
              每张右上角有一个明确的 ✕ 按钮单独移出。
              【为什么不用「点图片移出」】原实现把整个缩略图当删除按钮，
              触屏上没有 hover 提示，用户以为点图是查看大图，实际是删除；
-             桌面端也容易误点。改成显式 ✕ 更安全直观。 -->
+             桌面端也容易误点。改成显式 ✕ 更安全直观。
+             【缩略图来源】走 /thumbnails/batch 批量 zip 取回的 blob URL，
+             与图片网格共用同一份缓存，不会逐张发请求。 -->
         <div class="grid grid-cols-4 gap-1.5 max-h-52 overflow-auto pr-0.5">
           <div
-            v-for="item in cartItems"
-            :key="item.md5"
+            v-for="md5 in cartMd5s"
+            :key="md5"
             class="relative"
           >
             <img
-              :src="item.thumb_url"
+              v-if="cartThumbs[md5]"
+              :src="cartThumbs[md5]"
               class="w-full aspect-square object-cover rounded border border-slate-200"
-              :title="item.md5.slice(0, 8)"
-              loading="lazy"
+              :title="md5.slice(0, 8)"
             />
+            <!-- 缩略图还没取回时的占位 -->
+            <div
+              v-else
+              class="w-full aspect-square rounded border border-slate-200 bg-slate-100 flex items-center justify-center"
+              :title="md5.slice(0, 8)"
+            >
+              <Loader2 class="w-3 h-3 text-slate-400 animate-spin" />
+            </div>
             <!-- 单独移出按钮 -->
             <button
               class="cart-remove-btn absolute -top-1 -right-1 w-4 h-4 rounded-full
@@ -856,8 +885,8 @@ onBeforeUnmount(() => {
                      flex items-center justify-center
                      shadow-md ring-1 ring-white
                      hover:bg-red-600 active:scale-90 transition-transform"
-              :title="'移出：' + item.md5.slice(0, 8)"
-              @click.stop="removeFromCart(item.md5)"
+              :title="'移出：' + md5.slice(0, 8)"
+              @click.stop="removeFromCart(md5)"
             >&times;</button>
           </div>
         </div>

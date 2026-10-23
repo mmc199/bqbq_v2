@@ -9,7 +9,6 @@ import TagInput from '@/components/TagInput.vue'
 import { imageUrl, thumbnailUrl, downloadName, localImageUrl, localThumbnailUrl, isCdnUrl } from '@/composables/useImageUrl'
 import { getThumbBlobUrl, isBatchPending, onBatchSettled } from '@/composables/useThumbBatch'
 import { useGlobalStore } from '@/stores/useGlobalStore'
-import { useCartApi } from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import type { MemeImage } from '@/types'
 
@@ -31,44 +30,32 @@ const emit = defineEmits<{
 //  购物车
 // ===========================================================================
 //
-// 数据存在后端（bot 要按 openid 取），store 只是内存缓存。
-// 卡片上的按钮只负责调用接口 + 同步 store，FAB 的角标会自动更新。
+// 【纯前端存储】加/删购物车只在本地（localStorage）完成，**不发请求**。
+//
+// 为什么：购物车是"挑选阶段"，用户可能点几十次才决定要哪些。
+// 若每点一次都打后端，在 860ms RTT 的穿透链路上会卡得没法用，
+// 而且后端表里塞满半成品数据没意义。
+//
+// 只有用户点「发送到 QQ」时才 `POST /api/cart/send`，
+// 把整份 md5 列表一次性提交给后端。bot 只关心"这次要发什么"。
 const globalStore = useGlobalStore()
-const cartApi = useCartApi()
 const toast = useToast()
 
 const inCart = computed(() => globalStore.isInCart(props.image.md5))
-const cartBusy = ref(false)
 
-async function toggleCart() {
-  if (cartBusy.value) return
+function toggleCart() {
   if (!globalStore.authGranted) {
     toast.warning('请先登录 QQ 再使用购物车（点击右侧企鹅按钮）')
     return
   }
 
-  cartBusy.value = true
   const md5 = props.image.md5
-  try {
-    if (inCart.value) {
-      const r = await cartApi.remove(globalStore.clientId, md5)
-      if (r.success) {
-        globalStore.removeCartMd5(md5)
-        toast.info('已移出购物车')
-      } else {
-        toast.error(r.error || '移出失败')
-      }
-    } else {
-      const r = await cartApi.add(globalStore.clientId, md5)
-      if (r.success) {
-        globalStore.addCartMd5(md5)
-        toast.success('已加入购物车')
-      } else {
-        toast.error(r.error || '加入失败')
-      }
-    }
-  } finally {
-    cartBusy.value = false
+  if (inCart.value) {
+    globalStore.removeCartMd5(md5)
+    toast.info('已移出购物车')
+  } else {
+    globalStore.addCartMd5(md5)
+    toast.success('已加入购物车')
   }
 }
 
@@ -612,18 +599,17 @@ onBeforeUnmount(() => {
         <Download v-else class="w-5 h-5" />
       </button>
       <div class="flex gap-2">
-        <!-- 购物车切换（放在复制按钮左边） -->
+        <!-- 购物车切换（放在复制按钮左边）
+             纯前端操作，无网络请求，所以不需要 loading 态 -->
         <button
           :class="[
             'cart-btn p-2 rounded-lg transition',
             inCart ? 'bg-amber-500 text-white' : 'bg-black/40 text-white hover:bg-black/60'
           ]"
           :title="inCart ? '移出购物车' : '加入购物车'"
-          :disabled="cartBusy"
           @click.stop="toggleCart"
         >
-          <Loader2 v-if="cartBusy" class="w-5 h-5 animate-spin" />
-          <ShoppingCart v-else class="w-5 h-5" />
+          <ShoppingCart class="w-5 h-5" />
         </button>
         <button
           :class="[

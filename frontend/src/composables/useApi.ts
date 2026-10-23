@@ -769,10 +769,16 @@ export function useCartApi() {
     })
   }
 
-  async function send(clientId: string): Promise<ApiResponse<AuthResult>> {
+  /**
+   * 把 md5 列表推入待取回队列。
+   *
+   * 【为什么必须传 md5s】购物车是纯前端存储，后端并不知道里面有什么。
+   * 点「发送到 QQ」时把整份列表一次性提交，后端据此建队列供 bot 取回。
+   */
+  async function send(clientId: string, md5s: string[]): Promise<ApiResponse<AuthResult>> {
     return request<AuthResult>('/cart/send', {
       method: 'POST',
-      body: JSON.stringify({ client_id: clientId }),
+      body: JSON.stringify({ client_id: clientId, md5s }),
     })
   }
 
