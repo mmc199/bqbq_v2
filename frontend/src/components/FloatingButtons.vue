@@ -892,8 +892,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="text-[11px] text-slate-500 leading-relaxed">
-          点右上角 <span class="text-red-500 font-bold">×</span> 单独移出；
-          或点下方按钮后，私聊机器人发送 <b>bqbq取回</b> 领取全部。
+          点按钮后私聊机器人发送 <b>bqbq取回</b>
         </div>
 
         <button
