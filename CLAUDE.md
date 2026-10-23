@@ -571,13 +571,16 @@ bqbq_v2/
 3. `/api/search` 已经兼容简单搜索和旧版高级搜索 payload。
 4. 规则树读取结果仍偏向旧项目扁平结构，前端在 `useApi.ts` 内做树形组装。
 5. `MemeCard.vue` 当前用于“点击外部关闭编辑”的是 `editorRef`，**卡片根节点已不再依赖额外模板 ref**。
-6. `backend/app/main.py` 在启动时会扫描图片目录、重建 `tags_dict`，并启动后台线程周期刷新。
+6. `backend/app/main.py` 在启动时初始化数据库、复用/重建 `tags_dict`，并启动后台线程周期刷新。
+   **启动时不再扫描图片目录**（详见第 9 条）。
 7. **图片目录是 md5 两段式分片结构**，`images.filename` 存分片相对路径。
    `backend/meme_images` 与 `backend/meme_images_thumbnail` 是指向
    `D:\bqbq_backend\` 下真实目录的**符号链接**。
 8. 数据库共 **434,810 行**，其中 181 行有标签（多数图片尚未打标签）。
-9. 启动扫描在「磁盘文件数 == 库记录数」时会走快速路径跳过逐文件校验；
-   需要强制核对时设置环境变量 `BQBQ_FORCE_FOLDER_SCAN=1`。
+9. **启动时不扫盘**。所有入库路径（机器人上传、网页上传）都走 API 并写库，
+   数据库即权威来源；扫 45 万文件冷启动要 5-70 秒，却几乎总是"没有新图"。
+   需要核对磁盘与库时手动执行 `cd backend && python scan_folder.py`。
+   同时 `rebuild_tags_dict()` 在 `tags_dict` 已有数据时直接复用，不再每次启动重建。
 10. 数据集里有 HEIC/HEIF 图片，`main.py` 与 `routers/images.py` 都已注册
     `pillow_heif.register_heif_opener()`，**不要删掉这段注册**，否则那些图会生成不了缩略图。
 

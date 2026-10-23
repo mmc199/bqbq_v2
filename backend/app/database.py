@@ -237,11 +237,29 @@ def get_conflict_info(base_version: int) -> dict:
         }
 
 
-def rebuild_tags_dict():
+def rebuild_tags_dict(force: bool = False):
     """
     重建 tags_dict 表，统计所有图片中每个标签的实际使用次数。
-    在后端启动时调用一次，确保数据准确。
+
+    【两个调用方，语义相反，不要混用】
+      · 启动阶段（startup）：`rebuild_tags_dict()` —— 已有数据就复用。
+        目的是避免每次启动都白跑一遍，冷启动更快。
+      · 定时刷新（start_tags_dict_updater）：`rebuild_tags_dict(force=True)`
+        —— 必须真的重建，否则字典永远不会更新。
+
+    【成本】实测一次完整重建约 0.34 秒：全库 45 万行里只有约 188 行
+    带标签，其它被 `WHERE tags != ''` 过滤，真正参与统计的标签很少。
     """
+    if not force:
+        try:
+            with get_connection() as conn:
+                cnt = conn.execute("SELECT COUNT(*) AS c FROM tags_dict").fetchone()["c"]
+            if cnt > 0:
+                print(f"[Tags Dict] 启动复用已有标签字典（{cnt} 个标签）")
+                return
+        except Exception:
+            pass  # 表不存在等问题 -> 走下面的完整重建
+
     print("[Tags Dict] Rebuilding tags dictionary...")
 
     with get_connection() as conn:

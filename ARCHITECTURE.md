@@ -172,9 +172,12 @@ bqbq_v2/
 - 挂载 `/images`
 - 实现 `/thumbnails/{filename}`
 - 启动时初始化数据库
-- 启动时扫描图片目录并补录数据库
-- 重建 `tags_dict`
+- 复用/重建 `tags_dict`
 - 启动后台线程定期更新 `tags_dict`
+
+> **注**：启动时**不再**扫描图片目录。所有入库路径（机器人上传、网页上传）
+> 都走 API 并写库，数据库即权威来源；扫 45 万文件冷启动要 5-70 秒，
+> 却几乎总是"没有新图"。需要核对磁盘时手动执行 `python scan_folder.py`。
 
 ### 2. 启动流程图
 
@@ -187,9 +190,7 @@ FastAPI startup event
    ↓
 init_database()
    ↓
-scan_and_import_folder()
-   ↓
-rebuild_tags_dict()
+rebuild_tags_dict()      # 已有数据则直接复用，跳过重建
    ↓
 start_tags_dict_updater()
    ↓

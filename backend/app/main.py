@@ -285,18 +285,21 @@ async def serve_thumbnail_batch(payload: dict):
 
 def scan_and_import_folder():
     """
-    启动时扫描图片目录，自动导入未在数据库中的图片。
+    扫描图片目录，导入未在数据库中的图片。
+
+    【何时运行】
+    **不再在启动时自动运行**（见 startup 的说明）。现在只在手动执行
+    `python scan_folder.py` 时调用，用于库外的意外改动需要核对时。
 
     【分片改造要点】
-    1. 目录是 ab/cd/md5.ext 两段式分片结构，必须递归扫描（rglob），
-       不能用 glob("*.jpg")，否则一张图都扫不到。
-    2. 已入库的文件直接跳过，不重新计算 MD5。
-       43 万张图如果每次启动都全量读一遍算 MD5，要读 134GB，启动会卡死。
+    1. 目录是 ab/cd/md5.ext 两段式分片结构，必须递归扫描，不能用
+       glob("*.jpg")，否则一张图都扫不到。
+    2. 已入库的文件直接跳过，不重新计算 MD5：
+       45 万张图全量算一遍 MD5 要读 134GB，耗时不可接受。
     3. 新文件按分片规则落位，不再平铺到根目录。
-    4. 文件名已经是 md5 的，直接采用文件名作为 md5（旧项目就是这么做的），
-       不用为了拿 md5 再读一遍文件内容。
+    4. 文件名已经是 md5 的，直接采用文件名作为 md5，不用读文件内容。
     """
-    print("[Folder Scan] Starting automatic import from images folder...")
+    print("[Folder Scan] Starting import from images folder...")
 
     img_folder = images_path
     if not img_folder.exists():
@@ -305,7 +308,7 @@ def scan_and_import_folder():
 
     allowed = {e.lower().lstrip(".") for e in settings.allowed_extensions}
 
-    # 1) 先取数据库现状：md5 -> filename
+    # 1) 先取数据库现状：md5 集合
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT md5, filename FROM images")
@@ -316,9 +319,9 @@ def scan_and_import_folder():
 
     # 2) 递归收集文件（跳过垃圾目录）
     #
-    # 【性能】这里刻意不用 Path.rglob：
-    # 43 万文件下 rglob 会为每个条目构造 Path 对象并反复 stat，实测要 60s+。
-    # 改用 os.scandir 显式走两层分片目录，DirEntry 自带缓存属性，快得多。
+    # 【性能】刻意不用 Path.rglob：45 万文件下 rglob 会为每个条目构造
+    # Path 对象并反复 stat，实测 60s+。改用 os.scandir 显式走两层分片目录，
+    # DirEntry 自带缓存属性，快得多。
     def iter_image_files():
         try:
             with os.scandir(img_folder) as top:
@@ -352,21 +355,8 @@ def scan_and_import_folder():
     total_files = len(all_files)
     print(f"[Folder Scan] 磁盘上发现 {total_files} 个图片文件")
 
-    # 【快速路径】磁盘文件数与库里记录数完全一致时，说明没有新文件，
-    # 直接跳过逐文件比对，避免每次启动都白跑 40 多万次循环。
-    # 可用 BQBQ_FORCE_FOLDER_SCAN=1 强制全量扫描。
-    if (
-        os.getenv("BQBQ_FORCE_FOLDER_SCAN") != "1"
-        and total_files == len(existing_md5s)
-    ):
-        print(
-            f"[Folder Scan] 磁盘 {total_files} 个文件与库中记录数一致，"
-            "跳过逐文件校验（如需强制扫描请设置 BQBQ_FORCE_FOLDER_SCAN=1）\n"
-        )
-        return
-
     if total_files == 0:
-        print("[Folder Scan] No image files found.")
+        print("[Folder Scan] No image files found.\n")
         return
 
     counters = {"skipped": 0, "moved": 0, "error": 0}
@@ -515,18 +505,29 @@ def scan_and_import_folder():
     print(f"  - Errors: {counters['error']}")
     if thumbnail_errors > 0:
         print(f"  - Thumbnail errors: {thumbnail_errors}")
-    print(f"[Folder Scan] Automatic import completed.\n")
+
+    print(f"[Folder Scan] Import completed.\n")
 
 
 def start_tags_dict_updater(interval_seconds: int = 900):
     """
-    启动后台线程，定时更新 tags_dict。
+    启动后台线程，定时重建 tags_dict。
+
+    【为什么这里必须 force=True】
+    rebuild_tags_dict() 非 force 时的语义是「已有数据就复用」，那是给
+    **启动阶段**省时间的（见 startup）。定时任务恰好相反：它的整个存在
+    意义就是**刷新**。若在这里也走"非空就跳过"，字典将永远不会更新。
+
+    【成本】实测一次完整重建约 0.34 秒 —— 全库 45 万行里只有约 188 行
+    带标签，其余被 `WHERE tags != ''` 过滤掉了，真正要统计的标签很少。
+    因此每 15 分钟跑一次的开销可以忽略，无需再做"变了才重建"的优化
+    （那需要先算一个 0.29 秒的签名，反而几乎省不下时间）。
     """
     def loop():
         while True:
             time.sleep(interval_seconds)
             try:
-                rebuild_tags_dict()
+                rebuild_tags_dict(force=True)
             except Exception as e:
                 print(f"[Tags Dict] Scheduled update failed: {e}")
 
@@ -537,11 +538,19 @@ def start_tags_dict_updater(interval_seconds: int = 900):
 
 @app.on_event("startup")
 async def startup():
-    """应用启动时初始化"""
-    init_database()
+    """应用启动时初始化。
 
-    # 扫描并导入图片文件夹
-    scan_and_import_folder()
+    【为什么启动时不再扫描图片目录】
+    目录已是规范的 ab/cd/md5.ext 分片结构，且所有入库路径（机器人上传、
+    网页上传）都走 API 并写数据库 —— 数据库就是权威来源，磁盘不需要回扫。
+    而扫描 45 万文件/6.5 万分片目录，冷启动要 5-70 秒，是启动最慢的一环。
+
+    需要核对磁盘与数据库时，手动执行：
+        python scan_folder.py            # 增量（按分片 mtime 只查变化的分片）
+        python scan_folder.py --force    # 全量逐个比对
+    详见 backend/scan_folder.py。
+    """
+    init_database()
 
     # 重建标签字典
     rebuild_tags_dict()
