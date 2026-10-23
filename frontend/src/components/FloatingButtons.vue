@@ -763,13 +763,12 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 登录面板
-         定位同购物车面板：跟着 FAB 走（sm:right-36），手机端贴屏幕右边。 -->
+         定位同购物车面板：始终 right-36，跟随 FAB 网格左侧。 -->
     <div
       id="login-panel"
       :class="[
-        'fixed top-24 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 origin-top-right flex-col gap-2',
-        'right-4 sm:right-36',
-        'w-[calc(100vw-2rem)] max-w-64',
+        'fixed top-24 right-36 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 origin-top-right flex-col gap-2',
+        'w-[calc(100vw-9.5rem)] max-w-64',
         showLoginPanel ? 'flex' : 'hidden'
       ]"
       title="QQ 登录"
@@ -819,17 +818,18 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 购物车面板
-         跟着 FAB 走：定位在按钮组左侧，与网格保持固定间隔。
+         始终跟随 FAB：定位在按钮组左侧。
          FAB 网格右边距 right-4(16px) + 两列 56px + gap 12px = 140px，
-         这里取 sm:right-36（144px）= 140 + 4px 间隔，紧贴网格左缘。
-         （原来是 right-44=176px，离网格还有 36px 空隙，视觉上偏远。）
-         手机端（< 640px）仍贴屏幕右边 + 宽度自适应，避免 360px 屏溢出。 -->
+         这里取 right-36（144px）= 140 + 4px 间隔，紧贴网格左缘。
+         手机端同样 right-36，宽度自适应剩余空间：
+           calc(100vw - 9rem - 0.5rem) = 屏宽 - 144px - 8px 左边距
+         多减 8px 是为了让面板左边缘留一点呼吸位，
+         否则 360px 屏上会正好顶到屏幕左边，看起来像被裁掉。 -->
     <div
       id="cart-panel"
       :class="[
-        'fixed top-24 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 origin-top-right flex-col gap-2',
-        'right-4 sm:right-36',
-        'w-[calc(100vw-2rem)] max-w-72',
+        'fixed top-24 right-36 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 origin-top-right flex-col gap-2',
+        'w-[calc(100vw-9.5rem)] max-w-72',
         showCartPanel ? 'flex' : 'hidden'
       ]"
       title="购物车"
@@ -868,7 +868,10 @@ onBeforeUnmount(() => {
              桌面端也容易误点。改成显式 ✕ 更安全直观。
              【缩略图来源】走 /thumbnails/batch 批量 zip 取回的 blob URL，
              与图片网格共用同一份缓存，不会逐张发请求。 -->
-        <div class="grid grid-cols-4 gap-1.5 max-h-52 overflow-auto pr-0.5">
+        <!-- 窄屏 3 列、sm 及以上 4 列：
+             360px 屏上面板仅约 208px 宽，4 列时单格只有 41px，
+             16px 的 × 按钮会遮掉近一半；3 列时单格 57px，好点也好按。 -->
+        <div class="grid grid-cols-3 sm:grid-cols-4 gap-1.5 max-h-52 overflow-auto pr-0.5">
           <div
             v-for="md5 in cartMd5s"
             :key="md5"
