@@ -487,13 +487,19 @@ async function handleDeleteImage(image: MemeImage) {
     }
   }
 
-  const result = await systemApi.updateTags(image.md5, nextTags)
+  // 必须带 client_id —— /update_tags 已加鉴权，漏传会 401
+  const result = await systemApi.updateTags(image.md5, nextTags, globalStore.clientId)
   const ok = result.success && (result.data?.success ?? true)
 
   if (!ok && idx !== -1) {
     const existing = images.value[idx]
     if (existing) {
       images.value[idx] = { ...existing, tags: oldTags || '' }
+    }
+    if (result.error?.includes('401')) {
+      toast.warning('请先登录 QQ 再打标签（点击右侧企鹅按钮）')
+    } else {
+      toast.error(`保存标签失败：${result.error || '未知错误'}`)
     }
   }
 }
@@ -511,13 +517,20 @@ async function handleUpdateTags(image: MemeImage, nextTags: string[]) {
     }
   }
 
-  const result = await systemApi.updateTags(image.md5, nextTags)
+  // 必须带 client_id —— /update_tags 已加鉴权，漏传会 401
+  const result = await systemApi.updateTags(image.md5, nextTags, globalStore.clientId)
   const ok = result.success && (result.data?.success ?? true)
 
   if (!ok && index !== -1) {
+    // 失败回滚到旧标签，避免界面显示成功但服务端没存
     const existing = images.value[index]
     if (existing) {
       images.value[index] = { ...existing, tags: oldTags }
+    }
+    if (result.error?.includes('401')) {
+      toast.warning('请先登录 QQ 再打标签（点击右侧企鹅按钮）')
+    } else {
+      toast.error(`保存标签失败：${result.error || '未知错误'}`)
     }
   }
 }
@@ -690,13 +703,19 @@ async function handleCardTempApply(image: MemeImage) {
     }
   }
 
-  const result = await systemApi.updateTags(image.md5, nextTags)
+  // 必须带 client_id —— /update_tags 已加鉴权，漏传会 401
+  const result = await systemApi.updateTags(image.md5, nextTags, globalStore.clientId)
   const ok = result.success && (result.data?.success ?? true)
 
   if (!ok && idx !== -1) {
     const existing = images.value[idx]
     if (existing) {
       images.value[idx] = { ...existing, tags: oldTags || '' }
+    }
+    if (result.error?.includes('401')) {
+      toast.warning('请先登录 QQ 再打标签（点击右侧企鹅按钮）')
+    } else {
+      toast.error(`保存标签失败：${result.error || '未知错误'}`)
     }
   }
 }

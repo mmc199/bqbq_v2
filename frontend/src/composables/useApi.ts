@@ -144,9 +144,15 @@ export function useImageApi() {
     })
   }
 
-  // 删除图片
-  async function deleteImage(id: number): Promise<ApiResponse<void>> {
-    return request<void>(`/images/${id}`, {
+  /**
+   * 删除图片（软删除：打回收站标签）。
+   *
+   * 【client_id 走 query】DELETE 方法通常不带请求体，
+   * 后端 require_edit 会依次尝试 query → header → body，
+   * 所以这里用 URL 参数传递，最稳妥。
+   */
+  async function deleteImage(id: number, clientId: string): Promise<ApiResponse<void>> {
+    return request<void>(`/images/${id}?client_id=${encodeURIComponent(clientId)}`, {
       method: 'DELETE',
     })
   }
@@ -670,11 +676,22 @@ export function useSystemApi() {
     )
   }
 
-  // 更新图片标签（旧项目兼容）
-  async function updateTags(md5: string, tags: string[]): Promise<ApiResponse<{ success: boolean }>> {
+  /**
+   * 更新图片标签（走旧项目兼容接口 /update_tags）。
+   *
+   * 【必须传 client_id】该接口已加 require_edit 鉴权，
+   * 后端从请求体读 client_id 判断是否已登录。
+   * 漏传会返回 401「未登录：缺少 client_id」—— 这是卡片打标签
+   * 在登录态下不生效的原因。
+   */
+  async function updateTags(
+    md5: string,
+    tags: string[],
+    clientId: string
+  ): Promise<ApiResponse<{ success: boolean }>> {
     return request<{ success: boolean }>('/update_tags', {
       method: 'POST',
-      body: JSON.stringify({ md5, tags }),
+      body: JSON.stringify({ md5, tags, client_id: clientId }),
     })
   }
 
