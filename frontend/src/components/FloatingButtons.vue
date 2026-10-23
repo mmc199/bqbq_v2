@@ -763,12 +763,12 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 登录面板
-         定位同购物车面板：桌面贴 FAB 左侧，手机贴屏幕右边并自适应宽度。 -->
+         定位同购物车面板：跟着 FAB 走（sm:right-36），手机端贴屏幕右边。 -->
     <div
       id="login-panel"
       :class="[
         'fixed top-24 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 origin-top-right flex-col gap-2',
-        'right-4 sm:right-34',
+        'right-4 sm:right-36',
         'w-[calc(100vw-2rem)] max-w-64',
         showLoginPanel ? 'flex' : 'hidden'
       ]"
@@ -819,17 +819,16 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 购物车面板
-         定位分两档：
-         · 桌面/平板（sm 及以上）：right-34（136px），紧贴 FAB 网格左侧
-           （网格宽 140px，留 4px 重叠）。原值 right-44=176px 加面板 288px
-           共 464px，在 360px 宽的手机上会把左边裁掉。
-         · 手机（< 640px）：right-4（16px）贴屏幕右边，宽度自适应
-           100vw-2rem，这样 360px 屏也能完整显示，不遮住 FAB。 -->
+         跟着 FAB 走：定位在按钮组左侧，与网格保持固定间隔。
+         FAB 网格右边距 right-4(16px) + 两列 56px + gap 12px = 140px，
+         这里取 sm:right-36（144px）= 140 + 4px 间隔，紧贴网格左缘。
+         （原来是 right-44=176px，离网格还有 36px 空隙，视觉上偏远。）
+         手机端（< 640px）仍贴屏幕右边 + 宽度自适应，避免 360px 屏溢出。 -->
     <div
       id="cart-panel"
       :class="[
         'fixed top-24 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 origin-top-right flex-col gap-2',
-        'right-4 sm:right-34',
+        'right-4 sm:right-36',
         'w-[calc(100vw-2rem)] max-w-72',
         showCartPanel ? 'flex' : 'hidden'
       ]"
