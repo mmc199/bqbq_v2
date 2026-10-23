@@ -1,9 +1,10 @@
 """
 规则树路由
 """
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from ..auth import require_edit
 from ..database import (
     get_connection,
     get_rules_version,
@@ -227,7 +228,7 @@ async def get_rules_tree(response: Response, if_none_match: str | None = None):
     return legacy_data
 
 
-@router.post("/groups")
+@router.post("/groups", dependencies=[Depends(require_edit)])
 async def create_group(data: GroupCreate):
     """创建规则组"""
     # CAS 版本检查（在事务外）
@@ -273,7 +274,7 @@ async def create_group(data: GroupCreate):
         return {"success": True, "id": group_id, "new_version": new_version}
 
 
-@router.post("/groups/{group_id}/keywords")
+@router.post("/groups/{group_id}/keywords", dependencies=[Depends(require_edit)])
 async def add_keyword(group_id: int, data: KeywordCreate):
     """添加关键词到组"""
     # CAS 版本检查
@@ -311,7 +312,7 @@ async def add_keyword(group_id: int, data: KeywordCreate):
         return {"success": True, "id": keyword_id, "new_version": new_version}
 
 
-@router.delete("/groups/{group_id}")
+@router.delete("/groups/{group_id}", dependencies=[Depends(require_edit)])
 async def delete_group(group_id: int, data: CASRequest):
     """删除规则组（级联删除子组和关键词）"""
     # CAS 版本检查
@@ -360,7 +361,7 @@ async def delete_group(group_id: int, data: CASRequest):
         return {"success": True, "new_version": new_version, "version_id": new_version}
 
 
-@router.delete("/keywords/{keyword_id}")
+@router.delete("/keywords/{keyword_id}", dependencies=[Depends(require_edit)])
 async def delete_keyword(keyword_id: int, data: CASRequest):
     """删除关键词"""
     # CAS 版本检查
@@ -390,7 +391,7 @@ async def delete_keyword(keyword_id: int, data: CASRequest):
         return {"success": True, "new_version": new_version, "version_id": new_version}
 
 
-@router.post("/keywords/{keyword_id}/toggle")
+@router.post("/keywords/{keyword_id}/toggle", dependencies=[Depends(require_edit)])
 async def toggle_keyword(keyword_id: int, data: KeywordToggle):
     """切换关键词启用状态"""
     # CAS 版本检查
@@ -423,7 +424,7 @@ async def toggle_keyword(keyword_id: int, data: KeywordToggle):
         return {"success": True, "version_id": new_version}
 
 
-@router.put("/groups/{group_id}")
+@router.put("/groups/{group_id}", dependencies=[Depends(require_edit)])
 async def update_group(group_id: int, data: GroupUpdate):
     """更新规则组（重命名、移动父节点、启用/禁用）"""
     # CAS 版本检查
@@ -491,7 +492,7 @@ async def update_group(group_id: int, data: GroupUpdate):
         return {"success": True, "version_id": new_version}
 
 
-@router.post("/groups/{group_id}/toggle")
+@router.post("/groups/{group_id}/toggle", dependencies=[Depends(require_edit)])
 async def toggle_group(group_id: int, data: GroupToggle):
     """切换规则组启用状态"""
     # CAS 版本检查
@@ -521,7 +522,7 @@ async def toggle_group(group_id: int, data: GroupToggle):
         return {"success": True, "new_version": new_version, "enabled": data.enabled}
 
 
-@router.post("/groups/batch")
+@router.post("/groups/batch", dependencies=[Depends(require_edit)])
 async def batch_groups(data: GroupBatchRequest):
     """批量操作规则组"""
     # CAS 版本检查
@@ -638,7 +639,7 @@ def has_hierarchy_cycle(cursor, parent_id: int, child_id: int) -> bool:
     return False
 
 
-@router.post("/hierarchy/add")
+@router.post("/hierarchy/add", dependencies=[Depends(require_edit)])
 async def add_hierarchy(data: HierarchyAddRequest):
     """添加层级关系（将子节点移动到父节点下）"""
     # CAS 版本检查
@@ -697,7 +698,7 @@ async def add_hierarchy(data: HierarchyAddRequest):
         return {"success": True, "version_id": new_version}
 
 
-@router.post("/hierarchy/remove")
+@router.post("/hierarchy/remove", dependencies=[Depends(require_edit)])
 async def remove_hierarchy(data: HierarchyRemoveRequest):
     """删除层级关系（将子节点移动到根级别）"""
     # CAS 版本检查
@@ -737,7 +738,7 @@ async def remove_hierarchy(data: HierarchyRemoveRequest):
         return {"success": True, "version_id": new_version}
 
 
-@router.post("/hierarchy/batch_move")
+@router.post("/hierarchy/batch_move", dependencies=[Depends(require_edit)])
 async def batch_move_hierarchy(data: HierarchyBatchMoveRequest):
     """批量移动层级"""
     # CAS 版本检查
@@ -837,7 +838,7 @@ def rebuild_hierarchy_for_group(cursor, group_id: int, new_parent_id: int | None
 # ===== 旧项目兼容接口（/api/rules/group/* /api/rules/keyword/*） =====
 
 
-@router.post("/group/add")
+@router.post("/group/add", dependencies=[Depends(require_edit)])
 async def legacy_add_group(data: LegacyGroupAddRequest):
     """旧项目兼容：/api/rules/group/add"""
     current_version = get_rules_version()
@@ -868,7 +869,7 @@ async def legacy_add_group(data: LegacyGroupAddRequest):
         return {"success": True, "version_id": new_version, "new_id": group_id}
 
 
-@router.post("/group/update")
+@router.post("/group/update", dependencies=[Depends(require_edit)])
 async def legacy_update_group(data: LegacyGroupUpdateRequest):
     """旧项目兼容：/api/rules/group/update"""
     current_version = get_rules_version()
@@ -899,7 +900,7 @@ async def legacy_update_group(data: LegacyGroupUpdateRequest):
         return {"success": True, "version_id": new_version}
 
 
-@router.post("/group/toggle")
+@router.post("/group/toggle", dependencies=[Depends(require_edit)])
 async def legacy_toggle_group(data: LegacyGroupToggleRequest):
     """旧项目兼容：/api/rules/group/toggle"""
     current_version = get_rules_version()
@@ -926,7 +927,7 @@ async def legacy_toggle_group(data: LegacyGroupToggleRequest):
         return {"success": True, "version_id": new_version}
 
 
-@router.post("/group/delete")
+@router.post("/group/delete", dependencies=[Depends(require_edit)])
 async def legacy_delete_group(data: LegacyGroupDeleteRequest):
     """旧项目兼容：/api/rules/group/delete"""
     current_version = get_rules_version()
@@ -966,7 +967,7 @@ async def legacy_delete_group(data: LegacyGroupDeleteRequest):
         return {"success": True, "version_id": new_version, "deleted_count": deleted_count}
 
 
-@router.post("/group/batch")
+@router.post("/group/batch", dependencies=[Depends(require_edit)])
 async def legacy_batch_group(data: LegacyGroupBatchRequest):
     """旧项目兼容：/api/rules/group/batch"""
     current_version = get_rules_version()
@@ -1022,7 +1023,7 @@ async def legacy_batch_group(data: LegacyGroupBatchRequest):
         return {"success": True, "version_id": new_version, "affected_count": affected}
 
 
-@router.post("/keyword/add")
+@router.post("/keyword/add", dependencies=[Depends(require_edit)])
 async def legacy_add_keyword(data: LegacyKeywordAddRequest):
     """旧项目兼容：/api/rules/keyword/add"""
     current_version = get_rules_version()
@@ -1053,7 +1054,7 @@ async def legacy_add_keyword(data: LegacyKeywordAddRequest):
         return {"success": True, "version_id": new_version}
 
 
-@router.post("/keyword/remove")
+@router.post("/keyword/remove", dependencies=[Depends(require_edit)])
 async def legacy_remove_keyword(data: LegacyKeywordRemoveRequest):
     """旧项目兼容：/api/rules/keyword/remove"""
     current_version = get_rules_version()

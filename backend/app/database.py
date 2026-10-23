@@ -147,6 +147,75 @@ def init_database():
             )
         """)
 
+        # =====================================================================
+        #  登录鉴权
+        # =====================================================================
+        #
+        # 【设计】client_id 直接作为凭据，不签发 token。
+        # 浏览器 localStorage 里的 client_xxx 是一串随机值；陌生人打开网站
+        # 会得到自己的 client_id，但它不在本表里，所以写操作仍被拒。
+        # 安全性由「服务端的授权记录」保证，而不是 client_id 本身。
+
+        # 已授权的客户端（永不过期）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS auth_granted_clients (
+                client_id   TEXT PRIMARY KEY,
+                openid      TEXT,
+                granted_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 待确认的验证码（4 位，5 分钟过期，用后即焚）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS auth_pending_codes (
+                code        TEXT PRIMARY KEY,
+                client_id   TEXT NOT NULL,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at  TIMESTAMP NOT NULL,
+                used        INTEGER DEFAULT 0
+            )
+        """)
+
+        # 操作审计日志
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id   TEXT NOT NULL,
+                openid      TEXT,
+                action      TEXT NOT NULL,
+                target      TEXT,
+                detail      TEXT,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # =====================================================================
+        #  购物车
+        # =====================================================================
+
+        # 用户的购物车（长期保留的收藏）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cart_items (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id   TEXT NOT NULL,
+                md5         TEXT NOT NULL,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(client_id, md5)
+            )
+        """)
+
+        # 待取回队列（用户点「发送到 QQ」后进入这里，bot 取走即标记）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cart_outbox (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id   TEXT NOT NULL,
+                md5         TEXT NOT NULL,
+                status      TEXT DEFAULT 'pending',
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                taken_at    TIMESTAMP
+            )
+        """)
+
         # 创建性能优化索引
         try:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_keywords_group ON search_keywords(group_id)")
@@ -156,6 +225,11 @@ def init_database():
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_created ON images(created_at DESC)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_size ON images(file_size DESC)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_resolution ON images(height DESC, width DESC)")
+            # 鉴权 / 审计 / 购物车
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_client ON audit_log(client_id, created_at DESC)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cart_client ON cart_items(client_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_outbox_status ON cart_outbox(status, client_id)")
         except sqlite3.OperationalError:
             pass  # 索引已存在
 

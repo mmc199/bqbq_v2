@@ -4,10 +4,13 @@
  * 复刻旧项目：覆盖层标签编辑、复制标签、回收站软删除、原图加载
  */
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { Download, Trash2, RefreshCw, Check, Loader2 } from 'lucide-vue-next'
+import { Download, Trash2, RefreshCw, Check, Loader2, ShoppingCart } from 'lucide-vue-next'
 import TagInput from '@/components/TagInput.vue'
 import { imageUrl, thumbnailUrl, downloadName, localImageUrl, localThumbnailUrl, isCdnUrl } from '@/composables/useImageUrl'
 import { getThumbBlobUrl, isBatchPending, onBatchSettled } from '@/composables/useThumbBatch'
+import { useGlobalStore } from '@/stores/useGlobalStore'
+import { useCartApi } from '@/composables/useApi'
+import { useToast } from '@/composables/useToast'
 import type { MemeImage } from '@/types'
 
 const props = defineProps<{
@@ -23,6 +26,51 @@ const emit = defineEmits<{
   'applyTempTags': [image: MemeImage]
   'updateTags': [image: MemeImage, tags: string[]]
 }>()
+
+// ===========================================================================
+//  购物车
+// ===========================================================================
+//
+// 数据存在后端（bot 要按 openid 取），store 只是内存缓存。
+// 卡片上的按钮只负责调用接口 + 同步 store，FAB 的角标会自动更新。
+const globalStore = useGlobalStore()
+const cartApi = useCartApi()
+const toast = useToast()
+
+const inCart = computed(() => globalStore.isInCart(props.image.md5))
+const cartBusy = ref(false)
+
+async function toggleCart() {
+  if (cartBusy.value) return
+  if (!globalStore.authGranted) {
+    toast.warning('请先登录 QQ 再使用购物车（点击右侧企鹅按钮）')
+    return
+  }
+
+  cartBusy.value = true
+  const md5 = props.image.md5
+  try {
+    if (inCart.value) {
+      const r = await cartApi.remove(globalStore.clientId, md5)
+      if (r.success) {
+        globalStore.removeCartMd5(md5)
+        toast.info('已移出购物车')
+      } else {
+        toast.error(r.error || '移出失败')
+      }
+    } else {
+      const r = await cartApi.add(globalStore.clientId, md5)
+      if (r.success) {
+        globalStore.addCartMd5(md5)
+        toast.success('已加入购物车')
+      } else {
+        toast.error(r.error || '加入失败')
+      }
+    }
+  } finally {
+    cartBusy.value = false
+  }
+}
 
 const isOriginalLoading = ref(false)
 const imageError = ref(false)
@@ -564,6 +612,19 @@ onBeforeUnmount(() => {
         <Download v-else class="w-5 h-5" />
       </button>
       <div class="flex gap-2">
+        <!-- 购物车切换（放在复制按钮左边） -->
+        <button
+          :class="[
+            'cart-btn p-2 rounded-lg transition',
+            inCart ? 'bg-amber-500 text-white' : 'bg-black/40 text-white hover:bg-black/60'
+          ]"
+          :title="inCart ? '移出购物车' : '加入购物车'"
+          :disabled="cartBusy"
+          @click.stop="toggleCart"
+        >
+          <Loader2 v-if="cartBusy" class="w-5 h-5 animate-spin" />
+          <ShoppingCart v-else class="w-5 h-5" />
+        </button>
         <button
           :class="[
             'copy-btn p-2 rounded-lg transition',

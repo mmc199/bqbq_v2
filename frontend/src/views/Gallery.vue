@@ -11,15 +11,15 @@ import RuleTree from '@/components/RuleTree.vue'
 import SparkMD5 from 'spark-md5'
 import FloatingButtons from '@/components/FloatingButtons.vue'
 import ToastContainer from '@/components/ToastContainer.vue'
-import { useImageApi, useRulesApi, useSystemApi } from '@/composables/useApi'
+import { useImageApi, useSystemApi } from '@/composables/useApi'
 import { preloadThumbnails } from '@/composables/useThumbBatch'
 import { useGlobalStore } from '@/stores/useGlobalStore'
+import { setUnauthorizedHandler } from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import type { MemeImage, RuleGroup } from '@/types'
 
 // API & Store
 const imageApi = useImageApi()
-const rulesApi = useRulesApi()
 const systemApi = useSystemApi()
 const globalStore = useGlobalStore()
 const toast = useToast()
@@ -41,7 +41,6 @@ const hasMore = ref(true)
 
 // 模态框状态
 const uploadInputRef = ref<HTMLInputElement | null>(null)
-const importInputRef = ref<HTMLInputElement | null>(null)
 const isUploading = ref(false)
 const showRulesPanel = ref(false)
 // 功能开关（从 store 读取持久化值）
@@ -398,6 +397,13 @@ watch(
 // 视口变化（旋转屏幕、拖拽窗口、手机切换电脑版）后重新检查
 onMounted(() => {
   window.addEventListener('resize', handleViewportChange)
+
+  // 写操作返回 401 时（未登录）提示用户去点企鹅按钮。
+  // 用回调注册而不是让 useApi 直接依赖 store，避免循环导入。
+  setUnauthorizedHandler(() => {
+    globalStore.setAuthGranted(false)
+    toast.warning('请先登录 QQ 再操作（点击右侧企鹅按钮）')
+  })
 })
 function handleViewportChange() {
   autoFillRound = 0
@@ -405,6 +411,7 @@ function handleViewportChange() {
 }
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleViewportChange)
+  setUnauthorizedHandler(() => {})
 })
 
 // 加载所有标签（带缓存）
@@ -546,15 +553,24 @@ async function uploadFiles(files: FileList | null) {
 
       const formData = new FormData()
       formData.append('file', file)
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      })
+      // 【接口合并】原 /api/upload 已废弃，统一走 /api/images/upload。
+      // 该接口只收文件、没有 JSON 请求体，所以 client_id 走 URL query。
+      const response = await fetch(
+        `/api/images/upload?client_id=${encodeURIComponent(globalStore.clientId)}`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      )
+      if (response.status === 401) {
+        toast.error('请先登录 QQ 再上传（点击右侧企鹅按钮）')
+        break
+      }
       const result = await response.json()
       if (result.success) {
         toast.success(`上传成功：${file.name}`)
       } else {
-        toast.error(`上传失败：${result.error}`)
+        toast.error(`上传失败：${result.error || result.msg}`)
       }
     }
 
@@ -577,52 +593,16 @@ function handleUploadChange(e: Event) {
 }
 
 // 处理导出
+// 【已停用】后端 /export/all 接口已注释掉（JSON 导出在 45 万条下太慢，
+// 改用直接备份 backend/meme.db）。这里给出提示，不发请求。
 async function handleExport() {
-  toast.info('正在导出数据...')
-  const result = await systemApi.exportData()
-  if (result.success && result.data) {
-    const payload = result.data as Record<string, unknown>
-    const dataStr = JSON.stringify(payload, null, 2)
-    const dataBlob = new Blob([dataStr], { type: 'application/json' })
-    const url = URL.createObjectURL(dataBlob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `bqbq_export_${Date.now()}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-    const imagesCount = Array.isArray((payload as { images?: unknown }).images)
-      ? (payload as { images?: unknown[] }).images?.length ?? 0
-      : 0
-    toast.success(`导出成功！（${imagesCount} 张图片）`)
-  } else {
-    toast.error(`导出失败：${result.error}`)
-  }
+  toast.info('JSON 导出已停用，请直接备份 backend/meme.db 数据库文件')
 }
 
 // 处理导入
+// 【已停用】后端 /import/all 接口已注释掉，同上。
 async function handleImport() {
-  if (!importInputRef.value) return
-  importInputRef.value.value = ''
-  importInputRef.value.click()
-}
-
-async function handleJsonImportChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (!file) return
-
-  toast.info('正在导入数据...')
-  const result = await systemApi.importData(file)
-  const ok = result.success && (result.data?.success ?? true)
-  if (ok) {
-    const added = result.data?.imported_images ?? 0
-    const skipped = result.data?.skipped_images ?? 0
-    toast.success(`导入成功！新增 ${added} 张，跳过 ${skipped} 张`)
-    await refreshRulesTree()
-    searchImages(true)
-  } else {
-    const message = result.success ? result.data?.error : result.error
-    toast.error(`导入失败：${message}`)
-  }
+  toast.info('JSON 导入已停用，如需恢复数据请直接还原 backend/meme.db')
 }
 
 // 处理回收站模式切换
@@ -743,13 +723,6 @@ onMounted(() => {
   searchImages(true)
   loadAllTags()
 })
-
-async function refreshRulesTree() {
-  const result = await rulesApi.getRulesTree()
-  if (result.success && result.data) {
-    globalStore.setRulesTree(result.data)
-  }
-}
 </script>
 
 <template>
@@ -874,13 +847,6 @@ async function refreshRulesTree() {
       @change="handleUploadChange"
     />
 
-    <input
-      id="json-import-input"
-      ref="importInputRef"
-      type="file"
-      class="hidden"
-      accept=".json"
-      @change="handleJsonImportChange"
-    />
+    <!-- JSON 导入已停用（后端 /import/all 接口已注释），不再需要文件选择框 -->
   </div>
 </template>

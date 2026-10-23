@@ -6,7 +6,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +25,7 @@ except ImportError:
 else:
     register_heif_opener()
 
+from .auth import cleanup_expired_codes, require_edit, write_audit
 from .config import settings
 from .database import init_database, get_connection, rebuild_tags_dict
 from .image_format import resolve_upload_ext
@@ -64,13 +65,15 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # 延迟导入路由（避免循环导入）
-from .routers import images, rules, search, system
+from .routers import images, rules, search, system, auth as auth_router, cart as cart_router
 
 # 注册路由
 app.include_router(images.router, prefix="/api/images", tags=["图片"])
 app.include_router(search.router, prefix="/api", tags=["搜索"])
 app.include_router(rules.router, prefix="/api/rules", tags=["规则树"])
 app.include_router(system.router, prefix="/api", tags=["系统"])
+app.include_router(auth_router.router, prefix="/api/auth", tags=["登录鉴权"])
+app.include_router(cart_router.router, prefix="/api/cart", tags=["购物车"])
 
 # 同一套路由再挂一份 /g2/api 前缀。
 #
@@ -83,6 +86,8 @@ app.include_router(images.router, prefix="/g2/api/images", tags=["图片(g2)"], 
 app.include_router(search.router, prefix="/g2/api", tags=["搜索(g2)"], include_in_schema=False)
 app.include_router(rules.router, prefix="/g2/api/rules", tags=["规则树(g2)"], include_in_schema=False)
 app.include_router(system.router, prefix="/g2/api", tags=["系统(g2)"], include_in_schema=False)
+app.include_router(auth_router.router, prefix="/g2/api/auth", tags=["登录鉴权(g2)"], include_in_schema=False)
+app.include_router(cart_router.router, prefix="/g2/api/cart", tags=["购物车(g2)"], include_in_schema=False)
 
 # =============================================================================
 #  静态文件挂载（HTTP-only 安全版）
@@ -530,6 +535,8 @@ def start_tags_dict_updater(interval_seconds: int = 900):
                 rebuild_tags_dict(force=True)
             except Exception as e:
                 print(f"[Tags Dict] Scheduled update failed: {e}")
+            # 顺带清理过期的验证码与超 90 天的审计日志
+            cleanup_expired_codes()
 
     t = threading.Thread(target=loop, daemon=True, name="TagsDictUpdater")
     t.start()
@@ -577,9 +584,13 @@ async def root():
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    client_id: str | None = None,
+    auth_client: str = Depends(require_edit),
+):
     """
-    上传图片文件（FormData 方式）。
+    上传图片文件（FormData 方式）。需要登录（client_id 走 query）。
 
     返回字段与 /api/images/upload 保持一致：
         exists=True  表示本次上传前该图已存在（命中重复）

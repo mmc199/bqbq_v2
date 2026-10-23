@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 全局状态管理
  */
 import { defineStore } from 'pinia'
@@ -97,6 +97,34 @@ export const useGlobalStore = defineStore('global', () => {
   // 标签缓存
   const tagCache = ref<string[]>([])
   const tagCacheTimestamp = ref<number>(0)
+
+  // -------------------------------------------------------------------------
+  // 登录态
+  // -------------------------------------------------------------------------
+  //
+  // 【不存 token】client_id 本身就是凭据，后端查授权表判断是否可写。
+  // 这里只缓存一个布尔值用于按钮显示；真实状态以 /auth/me 为准。
+  const authGranted = ref(false)
+
+  // -------------------------------------------------------------------------
+  // 购物车
+  // -------------------------------------------------------------------------
+  //
+  // 【为什么放 store】卡片上的购物车按钮、FAB 的角标、购物车面板
+  // 三处都要读同一份数据，组件间传递太啰嗦。
+  // 数据本身存在后端（bot 需要按 openid 取），这里只是内存缓存。
+  const cartMd5s = ref<string[]>([])
+  const cartItems = ref<Array<{
+    md5: string
+    filename: string
+    tags: string[]
+    thumb_url: string
+  }>>([])
+
+  const cartCount = computed(() => cartMd5s.value.length)
+  function isInCart(md5: string) {
+    return cartMd5s.value.includes(md5)
+  }
 
   watch(preferHQ, (val) => saveBooleanToStorage(localStorage, PREFER_HQ_KEY, val))
   watch(isExpansionEnabled, (val) => saveBooleanToStorage(sessionStorage, EXPANSION_KEY, val))
@@ -229,6 +257,33 @@ export const useGlobalStore = defineStore('global', () => {
     expandedGroupIds.value = ids
   }
 
+  // -------------------------------------------------------------------------
+  // 登录态 / 购物车的 setter
+  // -------------------------------------------------------------------------
+
+  function setAuthGranted(v: boolean) {
+    authGranted.value = v
+  }
+
+  function setCart(items: Array<{ md5: string; filename: string; tags: string[]; thumb_url: string }>) {
+    cartItems.value = items
+    cartMd5s.value = items.map(i => i.md5)
+  }
+
+  function addCartMd5(md5: string) {
+    if (!cartMd5s.value.includes(md5)) cartMd5s.value.push(md5)
+  }
+
+  function removeCartMd5(md5: string) {
+    cartMd5s.value = cartMd5s.value.filter(m => m !== md5)
+    cartItems.value = cartItems.value.filter(i => i.md5 !== md5)
+  }
+
+  function clearCartState() {
+    cartMd5s.value = []
+    cartItems.value = []
+  }
+
   // 初始化
   function init() {
     saveClientId()
@@ -266,6 +321,18 @@ export const useGlobalStore = defineStore('global', () => {
     setFabCollapsed,
     setFabMiniPosition,
     setExpandedGroupIds,
+    // 登录态
+    authGranted,
+    setAuthGranted,
+    // 购物车
+    cartMd5s,
+    cartItems,
+    cartCount,
+    isInCart,
+    setCart,
+    addCartMd5,
+    removeCartMd5,
+    clearCartState,
     init,
   }
 })

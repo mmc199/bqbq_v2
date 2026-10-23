@@ -18,6 +18,19 @@ import type {
 // 从而避开 Nginx 默认对根路径 /api 的拦截（那个拦截会导致 401）
 const API_BASE = '/g2/api'
 
+/**
+ * 401 回调：写操作因未登录被拒时触发。
+ *
+ * 【为什么用回调而不是直接 import store】
+ * useApi 被多个模块引用，直接依赖 store 容易形成循环导入。
+ * 由 Gallery.vue 在启动时注册回调（弹 toast + 高亮登录按钮）。
+ */
+let unauthorizedHandler: (() => void) | null = null
+
+export function setUnauthorizedHandler(fn: () => void) {
+  unauthorizedHandler = fn
+}
+
 // 冲突响应类型（与旧项目保持一致）
 export interface ConflictResponse {
   success: false
@@ -56,6 +69,10 @@ async function request<T>(
     }
 
     if (!response.ok) {
+      // 401 = 未登录（写操作需要 client_id 已通过 QQ 验证）
+      if (response.status === 401) {
+        unauthorizedHandler?.()
+      }
       throw new Error(`HTTP ${response.status}: ${data.detail || response.statusText}`)
     }
 
@@ -668,4 +685,96 @@ export function useSystemApi() {
     importData,
     updateTags,
   }
+}
+
+// =============================================================================
+//  登录鉴权
+// =============================================================================
+//
+// 设计：client_id 直接作为凭据，不签发 token。
+// 网页申请 4 位验证码 → 用户私聊 bot 发送 → bot 通知后端授权该 client_id。
+// 之后所有写请求带上 client_id 即可，后端查授权表判断。
+
+export interface AuthResult {
+  success: boolean
+  granted: boolean
+  code?: string
+  expires_in?: number
+  message?: string
+  error?: string
+}
+
+export function useAuthApi() {
+  /** 申请验证码 */
+  async function requestCode(clientId: string): Promise<ApiResponse<AuthResult>> {
+    return request<AuthResult>('/auth/request', {
+      method: 'POST',
+      body: JSON.stringify({ client_id: clientId }),
+    })
+  }
+
+  /** 查询登录态 */
+  async function checkMe(clientId: string): Promise<ApiResponse<{ granted: boolean }>> {
+    return request<{ granted: boolean }>(`/auth/me?client_id=${encodeURIComponent(clientId)}`)
+  }
+
+  /** 退出登录 */
+  async function logout(clientId: string): Promise<ApiResponse<AuthResult>> {
+    return request<AuthResult>('/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({ client_id: clientId }),
+    })
+  }
+
+  return { requestCode, checkMe, logout }
+}
+
+// =============================================================================
+//  购物车
+// =============================================================================
+
+export interface CartItem {
+  md5: string
+  filename: string
+  tags: string[]
+  thumb_url: string
+  added_at?: string | null
+}
+
+export function useCartApi() {
+  async function list(clientId: string): Promise<ApiResponse<{ items: CartItem[]; total: number }>> {
+    return request<{ items: CartItem[]; total: number }>(
+      `/cart?client_id=${encodeURIComponent(clientId)}`
+    )
+  }
+
+  async function add(clientId: string, md5: string): Promise<ApiResponse<AuthResult>> {
+    return request<AuthResult>('/cart/add', {
+      method: 'POST',
+      body: JSON.stringify({ client_id: clientId, md5 }),
+    })
+  }
+
+  async function remove(clientId: string, md5: string): Promise<ApiResponse<AuthResult>> {
+    return request<AuthResult>('/cart/remove', {
+      method: 'POST',
+      body: JSON.stringify({ client_id: clientId, md5 }),
+    })
+  }
+
+  async function clear(clientId: string): Promise<ApiResponse<AuthResult>> {
+    return request<AuthResult>('/cart/clear', {
+      method: 'POST',
+      body: JSON.stringify({ client_id: clientId, md5: '' }),
+    })
+  }
+
+  async function send(clientId: string): Promise<ApiResponse<AuthResult>> {
+    return request<AuthResult>('/cart/send', {
+      method: 'POST',
+      body: JSON.stringify({ client_id: clientId }),
+    })
+  }
+
+  return { list, add, remove, clear, send }
 }

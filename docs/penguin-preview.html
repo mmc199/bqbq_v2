@@ -2,13 +2,13 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>企鹅按钮 v6 - 无圆点 + 放大小图标</title>
+<title>lucide Bird / ShoppingCart 原型</title>
 <style>
   body { font-family: system-ui, sans-serif; padding: 24px; background: #f8fafc; }
-  h2 { font-size: 15px; color: #334155; margin: 22px 0 10px; }
-  h3 { font-size: 13px; color: #64748b; margin: 16px 0 8px; }
+  h2 { font-size: 15px; color: #334155; margin: 24px 0 10px; }
+  h3 { font-size: 13px; color: #64748b; margin: 14px 0 8px; }
   .row { display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap; }
-  .panel { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:16px; margin-top:8px;}
+  .panel { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:16px; }
   .fab {
     width: 56px; height: 56px; border-radius: 16px;
     box-shadow: 0 10px 15px -3px rgb(0 0 0 / .1), 0 4px 6px -4px rgb(0 0 0 / .1);
@@ -22,170 +22,254 @@
 </head>
 <body>
 
-<h2>图标尺寸对比（56px 按钮内）</h2>
-<div class="panel">
-<h3>现有按钮的图标尺寸参考</h3>
-<div class="row">
-  <div style="text-align:center">
-    <div class="fab" style="border-color:#e2e8f0;color:#64748b">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>
-      </svg>
-    </div>
-    <div class="lbl">排序 w-5 20px</div>
-  </div>
-  <div style="text-align:center">
-    <div class="fab" style="border-color:#e2e8f0;color:#64748b">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>
-      </svg>
-    </div>
-    <div class="lbl">导出 w-6 24px</div>
-  </div>
-  <div style="text-align:center">
-    <div class="fab" style="border-color:#e2e8f0;color:#64748b">
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>
-      </svg>
-    </div>
-    <div class="lbl">建议 w-7 28px</div>
-  </div>
-  <div style="text-align:center">
-    <div class="fab" style="border-color:#e2e8f0;color:#64748b">
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>
-      </svg>
-    </div>
-    <div class="lbl">上传 w-7 28px</div>
-  </div>
-</div>
-<div class="lbl" style="text-align:left;margin-top:12px">
-  实测：排序/导出用 w-5~w-6，上传用 w-7。企鹅建议 <b>w-7 (28px)</b>，比常规图标大一档，更醒目。
-</div>
-</div>
-
-<h2>新版企鹅按钮（无圆点，纯颜色区分登录态）</h2>
+<h2>A. 登录按钮：lucide Bird</h2>
 <div class="panel">
 <div class="row">
 
   <!-- 未登录 -->
   <div style="text-align:center">
     <div class="fab" style="border-color:#e2e8f0;color:#94a3b8">
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 2.4c-2.2 0-4 2.1-4 5.2 0 1.3.25 2.5.65 3.45 -1.35 1.2-2.25 2.9-2.25 4.75 0 2.3.95 3.85 2.4 4.35 1 .35 2.1.4 3.2.15 1.1.25 2.2.2 3.2-.15 1.45-.5 2.4-2.05 2.4-4.35 0-1.85-.9-3.55-2.25-4.75 .4-.95.65-2.15.65-3.45 0-3.1-1.8-5.2-4-5.2z"/>
-        <circle cx="10.4" cy="7.1" r="0.85"/>
-        <circle cx="13.6" cy="7.1" r="0.85"/>
-        <path d="M12 9.1l1.1 1.05L12 11.1l-1.1-.95z"/>
-        <path d="M9.2 12.3c-.55.9-.85 2-.85 3.2 0 1.6.5 2.8 1.4 3.4"/>
-        <path d="M14.8 12.3c.55.9.85 2 .85 3.2 0 1.6-.5 2.8-1.4 3.4"/>
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 7h.01"/>
+        <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/>
+        <path d="m20 7 2 .5-2 .5"/>
+        <path d="M10 18v3"/>
+        <path d="M14 17.75V21"/>
+        <path d="M7 18a6 6 0 0 0 3.84-10.61"/>
       </svg>
     </div>
-    <div class="lbl">未登录<br>灰 slate-400</div>
+    <div class="lbl">未登录（灰）</div>
   </div>
 
-  <!-- 已登录 cyan -->
+  <!-- 已登录 -->
   <div style="text-align:center">
     <div class="fab" style="border-color:#a5f3fc;color:#0891b2">
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 2.4c-2.2 0-4 2.1-4 5.2 0 1.3.25 2.5.65 3.45 -1.35 1.2-2.25 2.9-2.25 4.75 0 2.3.95 3.85 2.4 4.35 1 .35 2.1.4 3.2.15 1.1.25 2.2.2 3.2-.15 1.45-.5 2.4-2.05 2.4-4.35 0-1.85-.9-3.55-2.25-4.75 .4-.95.65-2.15.65-3.45 0-3.1-1.8-5.2-4-5.2z"/>
-        <circle cx="10.4" cy="7.1" r="0.85"/>
-        <circle cx="13.6" cy="7.1" r="0.85"/>
-        <path d="M12 9.1l1.1 1.05L12 11.1l-1.1-.95z"/>
-        <path d="M9.2 12.3c-.55.9-.85 2-.85 3.2 0 1.6.5 2.8 1.4 3.4"/>
-        <path d="M14.8 12.3c.55.9.85 2 .85 3.2 0 1.6-.5 2.8-1.4 3.4"/>
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 7h.01"/>
+        <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/>
+        <path d="m20 7 2 .5-2 .5"/>
+        <path d="M10 18v3"/>
+        <path d="M14 17.75V21"/>
+        <path d="M7 18a6 6 0 0 0 3.84-10.61"/>
       </svg>
     </div>
-    <div class="lbl">已登录<br>青 cyan-600</div>
+    <div class="lbl">已登录（青）</div>
   </div>
 
-  <!-- 已登录 用更接近 QQ 蓝的颜色 -->
+  <!-- w-6 对照 -->
   <div style="text-align:center">
-    <div class="fab" style="border-color:#a5f3fc;color:#0891b2;background:#ecfeff">
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 2.4c-2.2 0-4 2.1-4 5.2 0 1.3.25 2.5.65 3.45 -1.35 1.2-2.25 2.9-2.25 4.75 0 2.3.95 3.85 2.4 4.35 1 .35 2.1.4 3.2.15 1.1.25 2.2.2 3.2-.15 1.45-.5 2.4-2.05 2.4-4.35 0-1.85-.9-3.55-2.25-4.75 .4-.95.65-2.15.65-3.45 0-3.1-1.8-5.2-4-5.2z"/>
-        <circle cx="10.4" cy="7.1" r="0.85"/>
-        <circle cx="13.6" cy="7.1" r="0.85"/>
-        <path d="M12 9.1l1.1 1.05L12 11.1l-1.1-.95z"/>
-        <path d="M9.2 12.3c-.55.9-.85 2-.85 3.2 0 1.6.5 2.8 1.4 3.4"/>
-        <path d="M14.8 12.3c.55.9.85 2 .85 3.2 0 1.6-.5 2.8-1.4 3.4"/>
+    <div class="fab" style="border-color:#a5f3fc;color:#0891b2">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 7h.01"/>
+        <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/>
+        <path d="m20 7 2 .5-2 .5"/>
+        <path d="M10 18v3"/>
+        <path d="M14 17.75V21"/>
+        <path d="M7 18a6 6 0 0 0 3.84-10.61"/>
       </svg>
     </div>
-    <div class="lbl">已登录变体<br>青底 cyan-50</div>
+    <div class="lbl">w-6 24px 对照</div>
+  </div>
+
+  <!-- 绿色变体 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#a7f3d0;color:#059669">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 7h.01"/>
+        <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/>
+        <path d="m20 7 2 .5-2 .5"/>
+        <path d="M10 18v3"/>
+        <path d="M14 17.75V21"/>
+        <path d="M7 18a6 6 0 0 0 3.84-10.61"/>
+      </svg>
+    </div>
+    <div class="lbl">已登录变体（绿）</div>
   </div>
 
 </div>
 </div>
 
-<h2>与其它按钮并排（56px 网格，看图标大小是否协调）</h2>
+<h2>B. 购物车按钮：lucide ShoppingCart</h2>
 <div class="panel">
-<div class="row" style="gap:12px">
-  <!-- 导出 amber w-6 -->
-  <div class="fab" style="border-color:#fde68a;color:#d97706">
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-    </svg>
+<div class="row">
+  <!-- 空购物车 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#e2e8f0;color:#64748b">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/>
+        <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>
+      </svg>
+    </div>
+    <div class="lbl">空</div>
   </div>
-  <!-- 登录 未登录 w-7 -->
-  <div class="fab" style="border-color:#e2e8f0;color:#94a3b8">
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 2.4c-2.2 0-4 2.1-4 5.2 0 1.3.25 2.5.65 3.45 -1.35 1.2-2.25 2.9-2.25 4.75 0 2.3.95 3.85 2.4 4.35 1 .35 2.1.4 3.2.15 1.1.25 2.2.2 3.2-.15 1.45-.5 2.4-2.05 2.4-4.35 0-1.85-.9-3.55-2.25-4.75 .4-.95.65-2.15.65-3.45 0-3.1-1.8-5.2-4-5.2z"/>
-      <circle cx="10.4" cy="7.1" r="0.85"/><circle cx="13.6" cy="7.1" r="0.85"/>
-      <path d="M12 9.1l1.1 1.05L12 11.1l-1.1-.95z"/>
-      <path d="M9.2 12.3c-.55.9-.85 2-.85 3.2 0 1.6.5 2.8 1.4 3.4"/>
-      <path d="M14.8 12.3c.55.9.85 2 .85 3.2 0 1.6-.5 2.8-1.4 3.4"/>
-    </svg>
+
+  <!-- 有货物 + 角标 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#fde68a;color:#d97706;position:relative;overflow:visible">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/>
+        <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>
+      </svg>
+      <span style="position:absolute;top:-4px;right:-4px;background:#f59e0b;color:#fff;
+                   font-size:9px;font-weight:700;padding:2px 5px;border-radius:9999px;
+                   line-height:1.2;box-shadow:0 1px 2px rgba(0,0,0,.2)">12</span>
+    </div>
+    <div class="lbl">有货 + 角标</div>
   </div>
-  <!-- 登录 已登录 w-7 -->
-  <div class="fab" style="border-color:#a5f3fc;color:#0891b2">
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 2.4c-2.2 0-4 2.1-4 5.2 0 1.3.25 2.5.65 3.45 -1.35 1.2-2.25 2.9-2.25 4.75 0 2.3.95 3.85 2.4 4.35 1 .35 2.1.4 3.2.15 1.1.25 2.2.2 3.2-.15 1.45-.5 2.4-2.05 2.4-4.35 0-1.85-.9-3.55-2.25-4.75 .4-.95.65-2.15.65-3.45 0-3.1-1.8-5.2-4-5.2z"/>
-      <circle cx="10.4" cy="7.1" r="0.85"/><circle cx="13.6" cy="7.1" r="0.85"/>
-      <path d="M12 9.1l1.1 1.05L12 11.1l-1.1-.95z"/>
-      <path d="M9.2 12.3c-.55.9-.85 2-.85 3.2 0 1.6.5 2.8 1.4 3.4"/>
-      <path d="M14.8 12.3c.55.9.85 2 .85 3.2 0 1.6-.5 2.8-1.4 3.4"/>
-    </svg>
+
+  <!-- blue 变体 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#bfdbfe;color:#2563eb;position:relative;overflow:visible">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/>
+        <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>
+      </svg>
+      <span style="position:absolute;top:-4px;right:-4px;background:#3b82f6;color:#fff;
+                   font-size:9px;font-weight:700;padding:2px 5px;border-radius:9999px;
+                   line-height:1.2;box-shadow:0 1px 2px rgba(0,0,0,.2)">3</span>
+    </div>
+    <div class="lbl">蓝色变体</div>
   </div>
-  <!-- 标签数 cyan w-5 -->
-  <div class="fab" style="border-color:#a5f3fc;color:#0891b2">
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>
-    </svg>
-  </div>
-  <!-- 排序 w-6 -->
-  <div class="fab" style="border-color:#e2e8f0;color:#475569">
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>
-    </svg>
-  </div>
-  <!-- 上传 w-7 -->
-  <div class="fab" style="border-color:#10b981;color:#10b981">
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
-    </svg>
-  </div>
-</div>
-<div class="lbl" style="text-align:left;margin-top:10px">
-  顺序：导出(w-6) · 登录未登录(w-7) · 登录已登录(w-7) · 标签数(w-5) · 排序(w-6) · 上传(w-7)
-  <br>企鹅 w-7 与上传按钮同大，比导出/排序大一号——视觉上够醒目但不越界。
 </div>
 </div>
 
-<h2>卡片深色工具条上（w-5 缩小版，适配小按钮）</h2>
+<h2>C. 卡片工具条上的购物车（20px，复制按钮左边）</h2>
+<div class="panel">
 <div class="oncard">
+  <!-- 购物车 未加入 -->
   <span class="tile">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 2.4c-2.2 0-4 2.1-4 5.2 0 1.3.25 2.5.65 3.45 -1.35 1.2-2.25 2.9-2.25 4.75 0 2.3.95 3.85 2.4 4.35 1 .35 2.1.4 3.2.15 1.1.25 2.2.2 3.2-.15 1.45-.5 2.4-2.05 2.4-4.35 0-1.85-.9-3.55-2.25-4.75 .4-.95.65-2.15.65-3.45 0-3.1-1.8-5.2-4-5.2z"/>
-      <circle cx="10.4" cy="7.1" r="0.85"/><circle cx="13.6" cy="7.1" r="0.85"/>
-      <path d="M12 9.1l1.1 1.05L12 11.1l-1.1-.95z"/>
-      <path d="M9.2 12.3c-.55.9-.85 2-.85 3.2 0 1.6.5 2.8 1.4 3.4"/>
-      <path d="M14.8 12.3c.55.9.85 2 .85 3.2 0 1.6-.5 2.8-1.4 3.4"/>
+      <circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/>
+      <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>
     </svg>
   </span>
-  <span class="tile">📋</span>
-  <span class="tile">🗑</span>
+  <!-- 购物车 已加入（蓝底） -->
+  <span class="tile" style="background:#3b82f6">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/>
+      <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>
+    </svg>
+  </span>
+  <!-- 复制 -->
+  <span class="tile">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="8" height="14" x="4" y="8" rx="2"/><path d="M15 4h-2a2 2 0 0 0-2 2v2"/><rect width="8" height="14" x="12" y="2" rx="2" ry="2"/>
+    </svg>
+  </span>
+  <!-- 删除 -->
+  <span class="tile">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+    </svg>
+  </span>
+</div>
+<div class="lbl" style="text-align:left">
+  顺序：购物车(未加入) · 购物车(已加入,蓝底) · 复制标签 · 删除
+</div>
+</div>
+
+<h2>D. 完整 FAB 网格（替换后 10 个按钮）</h2>
+<div class="panel">
+<div class="row" style="gap:12px">
+  <!-- 1 购物车（原导出位置） -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#fde68a;color:#d97706;position:relative;overflow:visible">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/>
+        <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>
+      </svg>
+      <span style="position:absolute;top:-4px;right:-4px;background:#f59e0b;color:#fff;font-size:9px;font-weight:700;padding:2px 5px;border-radius:9999px;line-height:1.2">7</span>
+    </div>
+    <div class="lbl">购物车</div>
+  </div>
+  <!-- 2 登录（原导入位置） -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#a5f3fc;color:#0891b2">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 7h.01"/>
+        <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/>
+        <path d="m20 7 2 .5-2 .5"/>
+        <path d="M10 18v3"/>
+        <path d="M14 17.75V21"/>
+        <path d="M7 18a6 6 0 0 0 3.84-10.61"/>
+      </svg>
+    </div>
+    <div class="lbl">QQ 登录</div>
+  </div>
+  <!-- 3 标签数 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#a5f3fc;color:#0891b2">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>
+      </svg>
+    </div>
+    <div class="lbl">标签数</div>
+  </div>
+  <!-- 4 批量打标 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#e9d5ff;color:#9333ea">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>
+      </svg>
+    </div>
+    <div class="lbl">批量打标</div>
+  </div>
+  <!-- 5 排序 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#e2e8f0;color:#475569">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>
+      </svg>
+    </div>
+    <div class="lbl">排序</div>
+  </div>
+  <!-- 6 HQ -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#bfdbfe;color:#2563eb;flex-direction:column">
+      <span style="font-size:10px;font-weight:900;line-height:1">HQ</span>
+      <span style="width:8px;height:8px;border-radius:50%;background:#2563eb;margin-top:2px"></span>
+    </div>
+    <div class="lbl">HQ</div>
+  </div>
+</div>
+<div class="row" style="gap:12px;margin-top:14px">
+  <!-- 7 回收站 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#e2e8f0;color:#94a3b8">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+      </svg>
+    </div>
+    <div class="lbl">回收站</div>
+  </div>
+  <!-- 8 上传 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#10b981;color:#10b981">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+      </svg>
+    </div>
+    <div class="lbl">上传</div>
+  </div>
+  <!-- 9 搜索 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#3b82f6;color:#3b82f6">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+      </svg>
+    </div>
+    <div class="lbl">搜索</div>
+  </div>
+  <!-- 10 膨胀 -->
+  <div style="text-align:center">
+    <div class="fab" style="border-color:#fde047;color:#ca8a04">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m17 14 3 3.3a1 1 0 0 1-.7 1.7H4.7a1 1 0 0 1-.7-1.7L7 14h-.3a1 1 0 0 1-.7-1.7L9 9h-.2A1 1 0 0 1 8 7.3L12 3l4 4.3a1 1 0 0 1-.8 1.7H15l3 3.3a1 1 0 0 1-.7 1.7H17"/><path d="M12 22v-3"/>
+      </svg>
+    </div>
+    <div class="lbl">膨胀</div>
+  </div>
+</div>
 </div>
 
 </body>

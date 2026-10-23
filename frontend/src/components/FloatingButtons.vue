@@ -5,15 +5,18 @@
  */
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import {
-  Search, RefreshCw, X, Download, Upload, Trash2,
+  Search, RefreshCw, X, Trash2,
   TreePine, ImagePlus, ChevronsRight, ChevronsLeft, Loader2,
   ArrowUpDown,
-  Hash, Stamp, FileText
+  Hash, Stamp, FileText,
+  Bird, ShoppingCart
 } from 'lucide-vue-next'
 import * as noUiSlider from 'nouislider'
 import 'nouislider/dist/nouislider.css'
 import TagInput from '@/components/TagInput.vue'
 import { useGlobalStore } from '@/stores/useGlobalStore'
+import { useAuthApi, useCartApi } from '@/composables/useApi'
+import { useToast } from '@/composables/useToast'
 
 const SLIDER_MAX_VISUAL = 6
 const INFINITY_DISPLAY = '∞'
@@ -66,6 +69,157 @@ const showTagCountPanel = ref(false)
 const showTempTagsPanel = ref(false)
 const sortMenuRef = ref<HTMLElement | null>(null)
 const sortButtonRef = ref<HTMLElement | null>(null)
+
+// ===========================================================================
+//  登录（QQ 验证码）
+// ===========================================================================
+//
+// 【为什么用面板而不是 toast】验证码有效期 5 分钟，toast 几秒就消失，
+// 用户去 QQ 发完消息回来就看不见了。面板可以一直显示并带倒计时。
+
+const toast = useToast()
+const authApi = useAuthApi()
+const cartApi = useCartApi()
+
+const showLoginPanel = ref(false)
+const showCartPanel = ref(false)
+
+const isLoggedIn = computed(() => globalStore.authGranted)
+const loginCode = ref('')
+const loginRemaining = ref(0)
+const loginPending = ref(false)
+
+let loginPollTimer: number | null = null
+let loginCountdownTimer: number | null = null
+
+function stopLoginTimers() {
+  if (loginPollTimer !== null) {
+    window.clearInterval(loginPollTimer)
+    loginPollTimer = null
+  }
+  if (loginCountdownTimer !== null) {
+    window.clearInterval(loginCountdownTimer)
+    loginCountdownTimer = null
+  }
+}
+
+/** 申请验证码并开始倒计时 / 轮询 */
+async function startLogin() {
+  stopLoginTimers()
+  loginPending.value = true
+
+  const r = await authApi.requestCode(globalStore.clientId)
+  if (!r.success || !r.data?.success) {
+    toast.error(r.data?.error || r.error || '申请验证码失败')
+    loginPending.value = false
+    return
+  }
+
+  // 已经登录过了
+  if (r.data.granted) {
+    globalStore.setAuthGranted(true)
+    loginPending.value = false
+    toast.success('已登录')
+    return
+  }
+
+  loginCode.value = r.data.code || ''
+  loginRemaining.value = r.data.expires_in ?? 300
+
+  // 倒计时
+  loginCountdownTimer = window.setInterval(() => {
+    loginRemaining.value -= 1
+    if (loginRemaining.value <= 0) {
+      stopLoginTimers()
+      loginPending.value = false
+      loginCode.value = ''
+    }
+  }, 1000)
+
+  // 每 2 秒查一次登录态
+  loginPollTimer = window.setInterval(async () => {
+    const me = await authApi.checkMe(globalStore.clientId)
+    if (me.success && me.data?.granted) {
+      stopLoginTimers()
+      globalStore.setAuthGranted(true)
+      loginPending.value = false
+      loginCode.value = ''
+      toast.success('登录成功')
+    }
+  }, 2000)
+}
+
+/** 退出登录 */
+async function logout() {
+  await authApi.logout(globalStore.clientId)
+  globalStore.setAuthGranted(false)
+  stopLoginTimers()
+  loginCode.value = ''
+  loginPending.value = false
+  toast.info('已退出登录')
+}
+
+function toggleLoginPanel() {
+  const next = !showLoginPanel.value
+  closeAllPanels()
+  showLoginPanel.value = next
+  if (next && !isLoggedIn.value && !loginCode.value) {
+    startLogin()
+  }
+}
+
+// ===========================================================================
+//  购物车
+// ===========================================================================
+
+const cartItems = computed(() => globalStore.cartItems)
+const cartCount = computed(() => globalStore.cartCount)
+
+/** 从后端拉取购物车（打开面板或操作后调用） */
+async function refreshCart() {
+  if (!isLoggedIn.value) {
+    globalStore.clearCartState()
+    return
+  }
+  const r = await cartApi.list(globalStore.clientId)
+  if (r.success && r.data) {
+    globalStore.setCart(r.data.items || [])
+  }
+}
+
+async function removeFromCart(md5: string) {
+  await cartApi.remove(globalStore.clientId, md5)
+  globalStore.removeCartMd5(md5)
+}
+
+async function clearCart() {
+  await cartApi.clear(globalStore.clientId)
+  globalStore.clearCartState()
+  toast.info('购物车已清空')
+}
+
+/** 把购物车推进待取回队列，提示用户私聊 bot */
+async function sendCartToQQ() {
+  if (cartCount.value === 0) {
+    toast.info('购物车是空的')
+    return
+  }
+  const r = await cartApi.send(globalStore.clientId)
+  if (r.success && r.data?.success) {
+    toast.success(r.data.message || '已加入待取回队列')
+  } else {
+    toast.error(r.data?.error || r.error || '发送失败')
+  }
+}
+
+function toggleCartPanel() {
+  const next = !showCartPanel.value
+  closeAllPanels()
+  showCartPanel.value = next
+  if (next) {
+    refreshCart()
+  }
+}
 
 const sortBy = computed(() => props.sortBy ?? 'date_desc')
 
@@ -373,6 +527,8 @@ function closeAllPanels() {
   showSortMenu.value = false
   showTagCountPanel.value = false
   showTempTagsPanel.value = false
+  showLoginPanel.value = false
+  showCartPanel.value = false
 }
 
 function handleSortOutsideClick(e: MouseEvent) {
@@ -390,6 +546,16 @@ onMounted(() => {
   } else {
     miniStripTop.value = DEFAULT_MINI_TOP
   }
+
+  // 查询登录态 + 购物车（client_id 已通过验证的话直接显示）
+  authApi.checkMe(globalStore.clientId).then((r) => {
+    if (r.success && r.data?.granted) {
+      globalStore.setAuthGranted(true)
+      refreshCart()
+    } else {
+      globalStore.setAuthGranted(false)
+    }
+  })
 })
 
 watch(tagSliderRef, () => initTagSlider())
@@ -411,6 +577,7 @@ onBeforeUnmount(() => {
     window.clearTimeout(tagRangeDebounceTimer)
     tagRangeDebounceTimer = null
   }
+  stopLoginTimers()
   document.removeEventListener('click', handleSortOutsideClick)
 })
 </script>
@@ -565,6 +732,129 @@ onBeforeUnmount(() => {
       >📐 低分辨率</button>
     </div>
 
+    <!-- 登录面板（仿 #tag-count-panel 的位置与样式） -->
+    <div
+      id="login-panel"
+      :class="[
+        'fixed top-24 right-44 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 w-64 origin-top-right flex-col gap-2',
+        showLoginPanel ? 'flex' : 'hidden'
+      ]"
+      title="QQ 登录"
+      @click.stop
+    >
+      <div class="flex items-center justify-between gap-1 mb-1">
+        <span class="text-xs font-bold text-slate-600 flex-1">QQ 登录</span>
+        <span
+          id="login-panel-close"
+          class="cursor-pointer text-slate-400 hover:text-red-500 text-base ml-1"
+          title="关闭"
+          @click="showLoginPanel = false"
+        >&times;</span>
+      </div>
+
+      <!-- 已登录 -->
+      <template v-if="isLoggedIn">
+        <div class="text-xs text-cyan-600 font-medium">已登录 ✅</div>
+        <div class="text-[11px] text-slate-400 font-mono break-all">
+          {{ globalStore.clientId }}
+        </div>
+        <button
+          id="login-logout-btn"
+          class="mt-1 px-2 py-1 text-xs bg-slate-200 text-slate-700 rounded hover:bg-slate-300 transition"
+          @click="logout"
+        >退出登录</button>
+      </template>
+
+      <!-- 未登录 -->
+      <template v-else>
+        <div class="text-xs text-slate-500">请私聊机器人发送：</div>
+        <div class="text-center py-2 bg-slate-50 rounded border border-slate-200">
+          <span class="text-base font-bold tracking-wide text-cyan-600 font-mono">
+            bqbq登录 {{ loginCode || '----' }}
+          </span>
+        </div>
+        <div class="text-[11px] text-slate-400">
+          <span v-if="loginRemaining > 0">{{ loginRemaining }} 秒后过期</span>
+          <span v-else class="text-amber-600">验证码已过期</span>
+        </div>
+        <button
+          id="login-refresh-btn"
+          class="mt-1 px-2 py-1 text-xs bg-cyan-500 text-white rounded hover:bg-cyan-600 transition"
+          @click="startLogin"
+        >{{ loginCode ? '换一个验证码' : '获取验证码' }}</button>
+      </template>
+    </div>
+
+    <!-- 购物车面板 -->
+    <div
+      id="cart-panel"
+      :class="[
+        'fixed top-24 right-44 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-40 w-72 origin-top-right flex-col gap-2',
+        showCartPanel ? 'flex' : 'hidden'
+      ]"
+      title="购物车"
+      @click.stop
+    >
+      <div class="flex items-center justify-between gap-1 mb-1">
+        <span class="text-xs font-bold text-slate-600 flex-1">购物车（{{ cartCount }}）</span>
+        <span
+          id="cart-panel-close"
+          class="cursor-pointer text-slate-400 hover:text-red-500 text-base ml-1"
+          title="关闭"
+          @click="showCartPanel = false"
+        >&times;</span>
+      </div>
+
+      <template v-if="!isLoggedIn">
+        <div class="text-xs text-slate-500 py-2">请先完成 QQ 登录</div>
+        <button
+          class="px-2 py-1 text-xs bg-cyan-500 text-white rounded hover:bg-cyan-600"
+          @click="toggleLoginPanel"
+        >去登录</button>
+      </template>
+
+      <template v-else-if="cartCount === 0">
+        <div class="text-xs text-slate-400 py-3 text-center">
+          购物车是空的<br />
+          <span class="text-[11px]">点图片上的购物车图标即可加入</span>
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="grid grid-cols-4 gap-1 max-h-48 overflow-auto">
+          <div
+            v-for="item in cartItems"
+            :key="item.md5"
+            class="relative group/item"
+          >
+            <img
+              :src="item.thumb_url"
+              class="w-full aspect-square object-cover rounded border border-slate-200 cursor-pointer"
+              :title="'点击移出：' + item.md5.slice(0, 8)"
+              @click="removeFromCart(item.md5)"
+            />
+            <span class="absolute inset-0 bg-red-500/60 text-white text-[10px] items-center justify-center rounded hidden group-hover/item:flex">移出</span>
+          </div>
+        </div>
+
+        <div class="text-[11px] text-slate-500 leading-relaxed">
+          点击下方按钮后，私聊机器人发送 <b>bqbq取回</b> 即可收到图片。
+        </div>
+
+        <button
+          id="cart-send-btn"
+          class="px-2 py-1 text-xs bg-amber-500 text-white rounded hover:bg-amber-600"
+          @click="sendCartToQQ"
+        >发送到 QQ（{{ cartCount }} 张）</button>
+
+        <button
+          id="cart-clear-btn"
+          class="px-2 py-1 text-xs bg-slate-200 text-slate-700 rounded hover:bg-slate-300"
+          @click="clearCart"
+        >清空</button>
+      </template>
+    </div>
+
     <!-- FAB 展开状态：2×5 网格布局（旧项目） -->
     <div
       id="fab-container"
@@ -573,26 +863,48 @@ onBeforeUnmount(() => {
         isCollapsed ? 'hidden' : ''
       ]"
     >
-        <!-- Export JSON -->
+        <!-- 购物车（替换原「导出 JSON」按钮）
+             导出接口已停用（JSON 导出在 45 万条下太慢，改用备份 db）。
+             购物车数据存后端，bot 要按 openid 取。 -->
         <button
-          id="fab-export"
+          id="fab-cart"
           class="w-14 h-14 bg-white hover:bg-amber-50 text-amber-600 border border-amber-200 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative group"
-          title="导出数据"
-          @click="emit('export')"
+          :title="`购物车（${cartCount} 张）`"
+          @click.stop="toggleCartPanel"
         >
-          <Download class="w-6 h-6" />
-          <span class="absolute right-full mr-3 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap pointer-events-none">导出JSON</span>
+          <ShoppingCart class="w-6 h-6" />
+          <span
+            id="cart-badge"
+            :class="[
+              'absolute -top-1 -right-1 bg-amber-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full',
+              cartCount > 0 ? '' : 'hidden'
+            ]"
+          >
+            {{ cartCount }}
+          </span>
+          <span class="absolute right-full mr-3 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap pointer-events-none">购物车</span>
         </button>
 
-        <!-- Import JSON -->
+        <!-- QQ 登录（替换原「导入 JSON」按钮）
+             导入接口已停用。
+             图标用 lucide Bird（lucide 无企鹅/鸽子）。
+             登录态只用颜色区分：未登录灰 / 已登录青。 -->
         <button
-          id="fab-import"
-          class="w-14 h-14 bg-white hover:bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-2xl shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative group"
-          title="导入数据"
-          @click="emit('import')"
+          id="fab-login"
+          :class="[
+            'w-14 h-14 bg-white rounded-2xl shadow-lg hover:shadow-xl hover:scale-105',
+            'transition-all flex items-center justify-center relative group border',
+            isLoggedIn
+              ? 'border-cyan-200 text-cyan-600 hover:bg-cyan-50'
+              : 'border-slate-200 text-slate-400 hover:bg-slate-50'
+          ]"
+          :title="isLoggedIn ? 'QQ 已登录' : 'QQ 未登录，点击登录'"
+          @click.stop="toggleLoginPanel"
         >
-          <Upload class="w-6 h-6" />
-          <span class="absolute right-full mr-3 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap pointer-events-none">导入JSON</span>
+          <Bird class="w-6 h-6" />
+          <span class="absolute right-full mr-3 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap pointer-events-none">
+            {{ isLoggedIn ? '已登录' : 'QQ 登录' }}
+          </span>
         </button>
 
         <!-- Tag Count Filter -->

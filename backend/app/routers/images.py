@@ -4,7 +4,7 @@
 import base64
 import hashlib
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 from PIL import Image
 import io
@@ -17,6 +17,7 @@ except ImportError:
 else:
     register_heif_opener()
 
+from ..auth import audit, require_edit, write_audit
 from ..config import settings
 from ..database import get_connection, get_rules_version, increment_rules_version
 from ..image_format import resolve_upload_ext
@@ -176,9 +177,9 @@ async def get_image(image_id: int):
         return dict(row)
 
 
-@router.post("", response_model=ImageResponse)
+@router.post("", response_model=ImageResponse, dependencies=[Depends(require_edit)])
 async def create_image(data: ImageCreate):
-    """上传图片"""
+    """上传图片（base64）。需要登录。"""
     # 检查 MD5 是否已存在
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -231,9 +232,17 @@ async def create_image(data: ImageCreate):
 
 
 @router.post("/upload")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(
+    file: UploadFile = File(...),
+    client_id: str | None = Query(default=None),
+    auth_client: str = Depends(require_edit),
+):
     """
     Multipart 上传图片。
+
+    【鉴权】只收文件、没有 JSON 请求体，所以 client_id 走 URL query：
+        POST /api/images/upload?client_id=bot_astrbot
+    网页上传与两个 bot 都走这一个接口。
 
     返回字段说明（供机器人等调用方判断结果）：
         success : 本次是否**新写入**了图片（重复时为 False）
@@ -311,9 +320,10 @@ async def upload_image(file: UploadFile = File(...)):
     return {"success": True, "exists": False, "msg": md5, "md5": md5}
 
 
-@router.put("/{image_id}/tags")
+@router.put("/{image_id}/tags", dependencies=[Depends(require_edit)])
+@audit("update_tags")
 async def update_image_tags(image_id: int, data: ImageUpdate):
-    """更新图片标签（CAS）"""
+    """更新图片标签（CAS）。需要登录。"""
     with get_connection() as conn:
         cursor = conn.cursor()
 
@@ -347,9 +357,9 @@ async def update_image_tags(image_id: int, data: ImageUpdate):
         return {"success": True, "new_version": new_version}
 
 
-@router.delete("/{image_id}")
+@router.delete("/{image_id}", dependencies=[Depends(require_edit)])
 async def delete_image(image_id: int):
-    """删除图片"""
+    """删除图片。需要登录。"""
     with get_connection() as conn:
         cursor = conn.cursor()
 
