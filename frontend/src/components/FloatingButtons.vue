@@ -409,17 +409,52 @@ function handleMaxInputChange() {
 const tempTagInputRef = ref<InstanceType<typeof TagInput> | null>(null)
 const localTempTags = ref<string[]>([...(props.tempTags || [])])
 
+// -------------------------------------------------------------------------
+//  临时标签：props <-> 本地状态双向同步
+// -------------------------------------------------------------------------
+//
+// 【为什么需要 syncing 标志】下面两个 watch 天然会形成无限循环：
+//   props.tempTags 变 -> 写 localTempTags -> watch(local) emit
+//     -> 父组件 tempTags.value = tags（新数组）-> props 变 -> ...
+//
+// 每次 emit 父组件都赋一个新数组，引用永远不同，deep watch 也无法跳过，
+// 最终把主线程彻底占满（表现为界面卡死，连输入框都点不动）。
+//
+// 解法：emit 前置位 syncing，等 props 回流时发现是「自己刚发出去的」
+// 就只更新本地副本、不再二次 emit，从而打断循环。
+
+let syncingFromLocal = false
+
 watch(
   () => props.tempTags,
   (tags) => {
-    localTempTags.value = [...(tags || [])]
+    const next = tags || []
+    // 内容相同就直接返回，避免无意义地重建数组
+    if (
+      next.length === localTempTags.value.length &&
+      next.every((t, i) => t === localTempTags.value[i])
+    ) {
+      return
+    }
+    syncingFromLocal = true
+    localTempTags.value = [...next]
+    // 等 watch(localTempTags) 这一轮 flush 完再复位
+    nextTick(() => {
+      syncingFromLocal = false
+    })
   },
   { immediate: true }
 )
 
-watch(localTempTags, (tags) => {
-  emit('updateTempTags', [...tags])
-}, { deep: true })
+watch(
+  localTempTags,
+  (tags) => {
+    // 来源于 props 的回流，不要再次 emit（否则死循环）
+    if (syncingFromLocal) return
+    emit('updateTempTags', [...tags])
+  },
+  { deep: true }
+)
 
 function handleTempInputUpdate(value: string) {
   emit('tempInputUpdate', value)

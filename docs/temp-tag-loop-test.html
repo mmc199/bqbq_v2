@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>临时标签死循环验证</title>
+<style>
+  body { font-family: system-ui, sans-serif; padding: 20px; background:#f8fafc; }
+  h3 { font-size: 14px; margin: 18px 0 8px; }
+  .box { background:#fff; border:1px solid #e2e8f0; border-radius:8px; padding:12px;
+         margin-bottom:10px; font-size:12px; }
+  .bad { border-color:#fca5a5; background:#fef2f2; }
+  .good { border-color:#86efac; background:#f0fdf4; }
+  .caps { display:flex; flex-wrap:wrap; gap:5px; margin:8px 0; min-height:24px; }
+  .cap { background:#e0f2fe; color:#0369a1; padding:2px 8px; border-radius:9999px;
+         font-size:11px; display:inline-flex; align-items:center; gap:4px; }
+  .cap b { cursor:pointer; }
+  input { border:1px solid #cbd5e1; border-radius:5px; padding:4px 8px; font-size:12px; width:140px; }
+  button { padding:4px 10px; font-size:12px; border:1px solid #cbd5e1; border-radius:5px;
+           background:#fff; cursor:pointer; }
+  .count { font-family: monospace; font-size:11px; color:#64748b; }
+  .frozen { color:#dc2626; font-weight:700; }
+</style>
+</head>
+<body>
+
+<h3>复现：父组件赋新数组导致的无限循环</h3>
+<div class="box bad">
+  <div>输入后点「生成胶囊」，观察 emit 次数是否疯涨：</div>
+  <div class="caps" id="caps-bad"></div>
+  <input id="in-bad" placeholder="输入标签，回车">
+  <button id="btn-bad">生成胶囊</button>
+  <div class="count" id="cnt-bad">emit 次数: 0</div>
+</div>
+
+<h3>修复：加引用相等判断 + syncing 标志</h3>
+<div class="box good">
+  <div class="caps" id="caps-good"></div>
+  <input id="in-good" placeholder="输入标签，回车">
+  <button id="btn-good">生成胶囊</button>
+  <div class="count" id="cnt-good">emit 次数: 0</div>
+</div>
+
+<script>
+// ---------------- 复现版（有 bug 的写法）----------------
+let badLocal = []
+let badParent = []
+let badEmits = 0
+let badFrozen = false
+
+function badRenderCaps() {
+  document.getElementById('caps-bad').innerHTML =
+    badLocal.map(t => `<span class="cap">${t}<b data-t="${t}">×</b></span>`).join('')
+}
+
+// 模拟 watch(localTempTags) -> emit
+function badOnLocalChange() {
+  if (badFrozen) return
+  badEmits++
+  document.getElementById('cnt-bad').textContent = `emit 次数: ${badEmits}`
+  if (badEmits > 500) {
+    badFrozen = true
+    document.getElementById('cnt-bad').className = 'count frozen'
+    document.getElementById('cnt-bad').textContent =
+      `emit 次数: ${badEmits}+ 💥 主线程卡死（真实页面会冻结整个界面）`
+    return
+  }
+  // 父组件收到后赋新数组
+  badParent = [...badLocal]
+  // props 变化 -> watch(props) -> 又写 local（新数组）
+  badLocal = [...badParent]
+  badRenderCaps()
+  // 递归触发，模拟 Vue 的同步 flush 链
+  setTimeout(badOnLocalChange, 0)
+}
+
+function badAdd(tag) {
+  if (!tag) return
+  badLocal = [...badLocal, tag]
+  badRenderCaps()
+  badOnLocalChange()
+}
+
+document.getElementById('btn-bad').onclick = () => {
+  const inp = document.getElementById('in-bad')
+  badAdd(inp.value.trim())
+  inp.value = ''
+}
+document.getElementById('in-bad').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-bad').click()
+})
+
+// ---------------- 修复版 ----------------
+let goodLocal = []
+let goodParent = []
+let goodEmits = 0
+let syncing = false
+
+function sameArr(a, b) {
+  return a.length === b.length && a.every((v, i) => v === b[i])
+}
+
+function goodRenderCaps() {
+  document.getElementById('caps-good').innerHTML =
+    goodLocal.map((t, i) => `<span class="cap">${t}<b data-i="${i}">×</b></span>`).join('')
+  document.getElementById('cnt-good').textContent = `emit 次数: ${goodEmits}`
+}
+
+// watch(localTempTags)
+function goodOnLocalChange() {
+  if (syncing) return               // ← 关键：来源是 props 回流，不再 emit
+  goodEmits++
+  goodParent = [...goodLocal]
+  goodRenderCaps()
+  // 父组件赋新数组后，props 变化，watch(props) 触发
+  goodOnPropsChange()
+}
+
+// watch(props.tempTags)
+function goodOnPropsChange() {
+  const next = goodParent
+  if (sameArr(next, goodLocal)) return   // ← 关键：内容相同直接返回
+  syncing = true
+  goodLocal = [...next]
+  goodRenderCaps()
+  setTimeout(() => { syncing = false }, 0)
+}
+
+function goodAdd(tag) {
+  if (!tag) return
+  if (goodLocal.includes(tag)) return
+  goodLocal = [...goodLocal, tag]
+  goodRenderCaps()
+  goodOnLocalChange()
+}
+
+document.getElementById('btn-good').onclick = () => {
+  const inp = document.getElementById('in-good')
+  goodAdd(inp.value.trim())
+  inp.value = ''
+}
+document.getElementById('in-good').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-good').click()
+})
+
+// 删除胶囊（验证双向同步仍工作）
+document.getElementById('caps-good').addEventListener('click', e => {
+  if (e.target.tagName === 'B') {
+    goodLocal = goodLocal.filter((_, i) => i !== Number(e.target.dataset.i))
+    goodRenderCaps()
+    goodOnLocalChange()
+  }
+})
+
+goodRenderCaps()
+</script>
+</body>
+</html>
