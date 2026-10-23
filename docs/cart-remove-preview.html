@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>购物车面板 - 移出按钮</title>
+<style>
+  body { font-family: system-ui, sans-serif; padding: 24px; background: #f8fafc; }
+  h2 { font-size: 14px; color: #334155; margin: 20px 0 8px; }
+  .note { font-size: 12px; color: #64748b; margin: 6px 0 12px; }
+  .panel {
+    width: 288px; background:#fff; border:1px solid #e2e8f0; border-radius:12px;
+    padding:12px; box-shadow: 0 25px 50px -12px rgb(0 0 0 / .25);
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .head { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .title { font-size:12px; font-weight:700; color:#475569; flex:1; }
+  .close { cursor:pointer; color:#94a3b8; font-size:16px; }
+  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; max-height:208px; overflow:auto; }
+  .cell { position:relative; }
+  .thumb { width:100%; aspect-ratio:1; object-fit:cover; border-radius:4px; border:1px solid #e2e8f0; background:#e2e8f0; display:block; }
+  .rm {
+    position:absolute; top:-4px; right:-4px; width:16px; height:16px; border-radius:9999px;
+    background:#ef4444; color:#fff; font-size:10px; line-height:1;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 4px 6px -1px rgb(0 0 0 / .1); outline:1px solid #fff;
+    border:none; cursor:pointer; padding:0;
+  }
+  .rm:hover { background:#dc2626; }
+  .hint { font-size:11px; color:#64748b; line-height:1.6; }
+  .hint b { color:#111; }
+  .btn-send { padding:4px 8px; font-size:12px; background:#f59e0b; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+  .btn-clear { padding:4px 8px; font-size:12px; background:#e2e8f0; color:#334155; border:none; border-radius:4px; cursor:pointer; }
+  .red { color:#ef4444; font-weight:700; }
+</style>
+</head>
+<body>
+
+<h2>购物车面板：每张缩略图右上角独立 × 按钮</h2>
+<div class="note">点击缩略图本身不再触发移出（原实现的问题），只有点 × 才移出</div>
+
+<div class="panel">
+  <div class="head">
+    <span class="title">购物车（5）</span>
+    <span class="close">&times;</span>
+  </div>
+
+  <div class="grid">
+    <div class="cell">
+      <img class="thumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><rect fill='%23fbbf24' width='80' height='80'/></svg>">
+      <button class="rm">&times;</button>
+    </div>
+    <div class="cell">
+      <img class="thumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><rect fill='%2334d399' width='80' height='80'/></svg>">
+      <button class="rm">&times;</button>
+    </div>
+    <div class="cell">
+      <img class="thumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><rect fill='%2360a5fa' width='80' height='80'/></svg>">
+      <button class="rm">&times;</button>
+    </div>
+    <div class="cell">
+      <img class="thumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><rect fill='%23f472b6' width='80' height='80'/></svg>">
+      <button class="rm">&times;</button>
+    </div>
+    <div class="cell">
+      <img class="thumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><rect fill='%23a78bfa' width='80' height='80'/></svg>">
+      <button class="rm">&times;</button>
+    </div>
+  </div>
+
+  <div class="hint">
+    点右上角 <span class="red">×</span> 单独移出；
+    或点下方按钮后，私聊机器人发送 <b>bqbq取回</b> 领取全部。
+  </div>
+
+  <button class="btn-send">发送到 QQ（5 张）</button>
+  <button class="btn-clear">清空</button>
+</div>
+
+<h2>对比：原来的实现（点整张图就删除）</h2>
+<div class="note">没有可见的删除按钮，必须悬停才出现遮罩，触屏完全不可用</div>
+<div class="panel" style="width:200px">
+  <div class="head"><span class="title">购物车（2）</span></div>
+  <div class="grid" style="grid-template-columns:repeat(2,1fr)">
+    <div class="cell">
+      <img class="thumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><rect fill='%23fbbf24' width='80' height='80'/></svg>" style="cursor:pointer">
+    </div>
+    <div class="cell">
+      <img class="thumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><rect fill='%2334d399' width='80' height='80'/></svg>" style="cursor:pointer">
+    </div>
+  </div>
+  <div class="hint" style="color:#ef4444">← 点一下图就删了，且没有任何可见提示</div>
+</div>
+
+</body>
+</html>

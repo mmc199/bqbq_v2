@@ -188,8 +188,19 @@ async function refreshCart() {
 }
 
 async function removeFromCart(md5: string) {
-  await cartApi.remove(globalStore.clientId, md5)
+  // 先乐观移除（UI 立即响应），失败再回滚并重新拉取
+  const backup = [...globalStore.cartMd5s]
   globalStore.removeCartMd5(md5)
+
+  const r = await cartApi.remove(globalStore.clientId, md5)
+  if (!r.success) {
+    // 回滚
+    backup.forEach(m => globalStore.addCartMd5(m))
+    toast.error(r.error || '移出失败，请重试')
+    return
+  }
+  // 以服务端为准刷新一次，避免本地与服务端不一致
+  await refreshCart()
 }
 
 async function clearCart() {
@@ -821,24 +832,39 @@ onBeforeUnmount(() => {
       </template>
 
       <template v-else>
-        <div class="grid grid-cols-4 gap-1 max-h-48 overflow-auto">
+        <!-- 购物车缩略图列表
+             每张右上角有一个明确的 ✕ 按钮单独移出。
+             【为什么不用「点图片移出」】原实现把整个缩略图当删除按钮，
+             触屏上没有 hover 提示，用户以为点图是查看大图，实际是删除；
+             桌面端也容易误点。改成显式 ✕ 更安全直观。 -->
+        <div class="grid grid-cols-4 gap-1.5 max-h-52 overflow-auto pr-0.5">
           <div
             v-for="item in cartItems"
             :key="item.md5"
-            class="relative group/item"
+            class="relative"
           >
             <img
               :src="item.thumb_url"
-              class="w-full aspect-square object-cover rounded border border-slate-200 cursor-pointer"
-              :title="'点击移出：' + item.md5.slice(0, 8)"
-              @click="removeFromCart(item.md5)"
+              class="w-full aspect-square object-cover rounded border border-slate-200"
+              :title="item.md5.slice(0, 8)"
+              loading="lazy"
             />
-            <span class="absolute inset-0 bg-red-500/60 text-white text-[10px] items-center justify-center rounded hidden group-hover/item:flex">移出</span>
+            <!-- 单独移出按钮 -->
+            <button
+              class="cart-remove-btn absolute -top-1 -right-1 w-4 h-4 rounded-full
+                     bg-red-500 text-white text-[10px] leading-none
+                     flex items-center justify-center
+                     shadow-md ring-1 ring-white
+                     hover:bg-red-600 active:scale-90 transition-transform"
+              :title="'移出：' + item.md5.slice(0, 8)"
+              @click.stop="removeFromCart(item.md5)"
+            >&times;</button>
           </div>
         </div>
 
         <div class="text-[11px] text-slate-500 leading-relaxed">
-          点击下方按钮后，私聊机器人发送 <b>bqbq取回</b> 即可收到图片。
+          点右上角 <span class="text-red-500 font-bold">×</span> 单独移出；
+          或点下方按钮后，私聊机器人发送 <b>bqbq取回</b> 领取全部。
         </div>
 
         <button
