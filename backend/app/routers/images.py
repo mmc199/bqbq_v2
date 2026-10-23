@@ -4,7 +4,7 @@
 import base64
 import hashlib
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from PIL import Image
 import io
@@ -17,7 +17,7 @@ except ImportError:
 else:
     register_heif_opener()
 
-from ..auth import audit, require_edit, write_audit
+from ..auth import audit, require_edit
 from ..config import settings
 from ..database import get_connection, get_rules_version, increment_rules_version
 from ..image_format import resolve_upload_ext
@@ -232,17 +232,17 @@ async def create_image(data: ImageCreate):
 
 
 @router.post("/upload")
-async def upload_image(
-    file: UploadFile = File(...),
-    client_id: str | None = Query(default=None),
-    auth_client: str = Depends(require_edit),
-):
+async def upload_image(file: UploadFile = File(...)):
     """
-    Multipart 上传图片。
+    Multipart 上传图片（**机器人专用，本轮不加鉴权**）。
 
-    【鉴权】只收文件、没有 JSON 请求体，所以 client_id 走 URL query：
-        POST /api/images/upload?client_id=bot_astrbot
-    网页上传与两个 bot 都走这一个接口。
+    【为什么保持开放】两个 bot（nonebot2 / AstrBot）日均上传上千张，
+    它们的代码本轮不改。若在此加 require_edit，bot 请求没带 client_id
+    会被 401 全部拒绝。
+
+    下一轮统一时再处理：届时让 bot 上传 URL 带上
+    `?client_id=bot_astrbot` 或 `bot_nonebot`，再打开鉴权。
+    详见 docs/写操作登录鉴权方案.md 的「下一轮待办」。
 
     返回字段说明（供机器人等调用方判断结果）：
         success : 本次是否**新写入**了图片（重复时为 False）
