@@ -25,6 +25,38 @@ bot 凭证取 11 位与之一致。
 **为什么带随机后缀**：以前用的是 `bot_astrbot` 这种固定名字，
 任何人猜到就能冒充 bot 获得写权限。加随机后缀后无法猜测。
 
+**生成方式**（与网页 `client_` 有意不同）
+
+网页用 JS 生成：
+
+```js
+'client_' + Math.random().toString(36).substring(2, 15)
+```
+
+bot 凭证用 Python 生成：
+
+```python
+import secrets
+alphabet = "abcdefghijklmnopqrstuvwxyz23456789"   # 剔除 l/o/0/1
+"".join(secrets.choice(alphabet) for _ in range(11))
+```
+
+三处差异及取舍：
+
+| | 网页 `client_`（JS） | bot 凭证（Python） |
+|---|---|---|
+| 随机源 | `Math.random()` 伪随机 | `secrets` 密码学安全 |
+| 字符集 | `0-9a-z` 共 36 个 | `a-z2-9` 共 32 个（去掉 l/o/0/1） |
+| 长度 | 10-12 位（不定） | 固定 11 位 |
+
+- **随机源**：bot 凭证是长期凭证、权限更大（能上传、能改标签），
+  用可预测的 `Math.random()` 不合适，因此保留 `secrets`。
+- **字符集**：剔除 `l/o/0/1` 是因为这几个字符在日志、截图、
+  手抄时极易混淆（`l` vs `1`、`o` vs `0`），凭证需要偶尔人工核对。
+- **长度**：取 11 位，与网页实际后缀（多为 11 位）视觉一致。
+
+熵：11 位 × log2(32) = **55 bit**，足够抵御猜测。
+
 ### 改凭证的完整步骤
 
 1. 生成新值：`bot_astrbot_` + 11 位随机（小写字母 + 数字）
