@@ -9,25 +9,30 @@
 `backend/meme.db` 的 `auth_granted_clients` 表（`kind='bot'`），
 与网页登录产生的凭证走同一套鉴权。
 
-| bot | client_id | 长度 |
-|---|---|---|
-| AstrBot | `bot_astrbot_5v63v6prskk9s` | 25 |
-| nonebot2 | `bot_nonebot_62iuu3gi3utwx` | 25 |
+| bot | client_id | 总长 | 后缀 |
+|---|---|---|---|
+| AstrBot | `bot_astrbot_7myj2alv7lg` | 23 | 11 |
+| nonebot2 | `bot_nonebot_4rhe5vnxh32` | 23 | 11 |
 
-**格式**：`bot_<名字>_` + 13 位随机字符（与网页 `client_xxxxxxxxxxxxx`
-的后缀长度一致），熵约 65 bit。
+**格式**：`bot_<名字>_` + 11 位随机字符。
+
+网页 `client_` 的后缀实测为 10-11 位：代码写的是
+`Math.random().toString(36).substring(2, 15)`，本意截 13 位，
+但 JS 的 `Math.random()` 随机部分通常只有 10-11 位有效数字，
+所以实际生成的就是 10-11 位（数据库里的真实样本可验证）。
+bot 凭证取 11 位与之一致。
 
 **为什么带随机后缀**：以前用的是 `bot_astrbot` 这种固定名字，
 任何人猜到就能冒充 bot 获得写权限。加随机后缀后无法猜测。
 
 ### 改凭证的完整步骤
 
-1. 生成新值：`bot_astrbot_` + 13 位随机（小写字母 + 数字）
+1. 生成新值：`bot_astrbot_` + 11 位随机（小写字母 + 数字）
 2. 更新数据库：
    ```sql
    DELETE FROM auth_granted_clients WHERE kind='bot' AND client_id LIKE 'bot_astrbot_%';
    INSERT INTO auth_granted_clients (client_id, openid, kind)
-   VALUES ('bot_astrbot_<新13位>', '__bot_astrbot__', 'bot');
+   VALUES ('bot_astrbot_<新11位>', '__bot_astrbot__', 'bot');
    ```
 3. 更新插件代码里的默认值（见下）
 4. 重启对应 bot
@@ -36,9 +41,9 @@
 
 | bot | 文件 | 位置 |
 |---|---|---|
-| AstrBot | `main.py` | `self.bot_client_id = str(cfg.get("bot_client_id") or "bot_astrbot_5v63v6prskk9s")` |
+| AstrBot | `main.py` | `self.bot_client_id = str(cfg.get("bot_client_id") or "bot_astrbot_7myj2alv7lg")` |
 | AstrBot | `imagelib.py` | `ImageLibClient(backend, client_id)`，内部用 `_with_cid()` / `_body()` 自动附加 |
-| nonebot2 | `__init__.py` | `BOT_CLIENT_ID = getattr(driver.config, "bqbq_client_id", "bot_nonebot_62iuu3gi3utwx")` |
+| nonebot2 | `__init__.py` | `BOT_CLIENT_ID = getattr(driver.config, "bqbq_client_id", "bot_nonebot_4rhe5vnxh32")` |
 
 两者都支持用配置项覆盖，不必改代码：
 - AstrBot：配置项 `bot_client_id`
