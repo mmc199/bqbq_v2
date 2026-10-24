@@ -232,17 +232,21 @@ async def create_image(data: ImageCreate):
 
 
 @router.post("/upload")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(
+    file: UploadFile = File(...),
+    client_id: str | None = None,
+    auth_client: str = Depends(require_edit),
+):
     """
-    Multipart 上传图片（**机器人专用，本轮不加鉴权**）。
+    Multipart 上传图片 —— **全站唯一的上传入口**。
 
-    【为什么保持开放】两个 bot（nonebot2 / AstrBot）日均上传上千张，
-    它们的代码本轮不改。若在此加 require_edit，bot 请求没带 client_id
-    会被 401 全部拒绝。
+    【鉴权】只收文件、没有 JSON 请求体，所以 client_id 走 URL query：
+        POST /api/images/upload?client_id=bot_astrbot_<random>
+    网页上传（/api/upload 已委托到这里）与两个 bot 都走此接口。
 
-    下一轮统一时再处理：届时让 bot 上传 URL 带上
-    `?client_id=bot_astrbot` 或 `bot_nonebot`，再打开鉴权。
-    详见 docs/写操作登录鉴权方案.md 的「下一轮待办」。
+    【bot 凭证】bot 的 client_id 形如 bot_astrbot_ + 24 位随机字符，
+    120 bit 熵，防止被猜出后冒用。已手动写入 auth_granted_clients 表，
+    kind='bot'，长期有效。
 
     返回字段说明（供机器人等调用方判断结果）：
         success : 本次是否**新写入**了图片（重复时为 False）

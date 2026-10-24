@@ -66,6 +66,7 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # 延迟导入路由（避免循环导入）
 from .routers import images, rules, search, system, auth as auth_router, cart as cart_router
+from .routers.images import upload_image
 
 # 注册路由
 app.include_router(images.router, prefix="/api/images", tags=["图片"])
@@ -583,75 +584,18 @@ async def root():
     return {"message": "BQBQ API v2.0", "docs": "/docs"}
 
 
-@app.post("/api/upload")
+@app.post("/api/upload", deprecated=True)
 async def upload_file(
     file: UploadFile = File(...),
     client_id: str | None = None,
     auth_client: str = Depends(require_edit),
 ):
+    """【已废弃】请改用 POST /api/images/upload。
+
+    保留此路由只为兼容尚未更新的调用方，内部直接委托给
+    images.upload_image，行为与返回字段完全一致。
+
+    两个接口原本各有一份 130 行的重复实现（落盘、缩略图、入库、推 R2），
+    任何一处修 bug 都要改两遍，是长期隐患，因此合并为一份。
     """
-    上传图片文件（FormData 方式）。需要登录（client_id 走 query）。
-
-    返回字段与 /api/images/upload 保持一致：
-        exists=True  表示本次上传前该图已存在（命中重复）
-        exists=False 且 success=True 表示新图已写入
-    """
-    # 验证文件类型
-    if not file.filename:
-        return {"success": False, "exists": False, "msg": "no filename"}
-
-    # 读取文件内容
-    content = await file.read()
-    if not content:
-        return {"success": False, "exists": False, "msg": "empty file"}
-
-    # 【关键】扩展名以**文件头**为准，绝不信任 file.filename。
-    # 机器人传的固定是 ("auto.gif", data, "image/gif")，直接用会让
-    # JPEG 存成 .gif（详见 image_format.resolve_upload_ext）。
-    try:
-        ext = resolve_upload_ext(content, file.filename)
-    except ValueError as e:
-        return {"success": False, "exists": False, "msg": str(e)}
-
-    # 计算 MD5
-    md5 = hashlib.md5(content).hexdigest()
-
-    # 检查是否已存在
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM images WHERE md5 = ?", (md5,))
-        existing = cursor.fetchone()
-        if existing:
-            # 重复图片：更新上传时间
-            cursor.execute("UPDATE images SET created_at = CURRENT_TIMESTAMP WHERE md5 = ?", (md5,))
-            conn.commit()
-            return {"success": False, "exists": True, "msg": "duplicate", "md5": md5}
-
-        # 获取图片尺寸
-        try:
-            img = Image.open(io.BytesIO(content))
-            width, height = img.size
-        except Exception:
-            width, height = 0, 0
-
-        # 生成文件名（使用 MD5 避免重名）并按分片规则落盘
-        rel_filename = sharded_rel_path(md5, ext)
-        file_path = images_path.joinpath(*rel_filename.split("/"))
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_bytes(content)
-
-        # 生成缩略图（同样按分片规则）
-        create_thumbnail_for(file_path, md5)
-
-        # 保存到数据库（filename 存分片相对路径）
-        cursor.execute(
-            """INSERT INTO images (filename, md5, tags, file_size, width, height)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (rel_filename, md5, "", len(content), width, height)
-        )
-        conn.commit()
-
-    # 异步推到 R2（供 CDN 使用），不阻塞响应
-    sync_async(file_path, rel_filename)
-
-    return {"success": True, "exists": False, "msg": md5, "md5": md5}
+    return await upload_image(file=file, client_id=client_id, auth_client=auth_client)

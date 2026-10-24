@@ -157,12 +157,72 @@ def init_database():
         # 安全性由「服务端的授权记录」保证，而不是 client_id 本身。
 
         # 已授权的客户端（永不过期）
+        #
+        # client_id 分两类：
+        #   1. 网页登录产生的：client_ + 13 位随机（浏览器 localStorage）
+        #   2. bot 长期凭证：bot_astrbot_<random> / bot_nonebot_<random>
+        #      bot 的 client_id 带随机后缀，防止被猜出后冒用。
+        #
+        # kind: 'web' | 'bot'，便于区分与统计
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS auth_granted_clients (
                 client_id   TEXT PRIMARY KEY,
                 openid      TEXT,
+                kind        TEXT DEFAULT 'web',
                 granted_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        """)
+
+        # 老库补字段（新增列时 SQLite 不支持 IF NOT EXISTS，用 try 兜底）
+        for ddl in (
+            "ALTER TABLE auth_granted_clients ADD COLUMN kind TEXT DEFAULT 'web'",
+        ):
+            try:
+                cursor.execute(ddl)
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+
+        # ---------------------------------------------------------------------
+        # openid 身份备注表
+        # ---------------------------------------------------------------------
+        #
+        # 【为什么单独建表】一个人可能有多台设备、多个 client_id，
+        # 但只对应一个 QQ 身份。把「openid -> 是谁」的备注独立出来，
+        # 避免同一 openid 在多条授权记录里重复维护备注。
+        #
+        # 用法（手动标记，防止忘记某个 openid 是谁）：
+        #   UPDATE openid_profiles SET remark='张三', qq='123456'
+        #   WHERE openid='A22C9E2359E63789C8E775ECD4A373B3';
+        #
+        # 查看全部：
+        #   SELECT * FROM v_openid_summary;
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS openid_profiles (
+                openid      TEXT PRIMARY KEY,
+                remark      TEXT,                              -- 备注名，如「我自己」「朋友小王」
+                qq          TEXT,                              -- 对应 QQ 号（可选）
+                is_owner    INTEGER DEFAULT 0,                 -- 1=站长本人
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 便于人工查看的汇总视图：openid + 备注 + 挂了几个 client_id
+        cursor.execute("""
+            CREATE VIEW IF NOT EXISTS v_openid_summary AS
+            SELECT
+                g.openid,
+                COALESCE(p.remark, '')          AS remark,
+                COALESCE(p.qq, '')              AS qq,
+                COALESCE(p.is_owner, 0)         AS is_owner,
+                COUNT(*)                        AS client_count,
+                GROUP_CONCAT(g.client_id, ', ') AS client_ids,
+                MIN(g.granted_at)               AS first_granted,
+                MAX(g.granted_at)               AS last_granted
+            FROM auth_granted_clients g
+            LEFT JOIN openid_profiles p ON p.openid = g.openid
+            WHERE g.openid IS NOT NULL AND g.openid != ''
+            GROUP BY g.openid
         """)
 
         # 待确认的验证码（4 位，5 分钟过期，用后即焚）
