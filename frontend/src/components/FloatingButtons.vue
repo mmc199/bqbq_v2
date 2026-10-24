@@ -274,20 +274,17 @@ const appliedRangeText = computed(() => `${appliedMin.value}-${appliedMax.value 
 /**
  * 当前查询命中总数的徽标文字。
  *
- * 【为什么压缩大数】徽标只有 56px 按钮的角落那么点地方，
- * 45 万这种 6 位数直接写会撑破布局，所以：
- *   9999 以下   原样显示
- *   1 万以上    显示 "1.2万"
- *   100 万以上  显示 "123万"
+ * 【为什么显示完整数字】徽标固定在按钮底端，是一条横向的条，
+ * 宽度只受按钮左右边界约束；大数（如 458441）也能放下。
+ * 早先放在角落时不得不压缩成 "45.8万"，现在不需要了 ——
+ * 完整数字对用户更有用（能直接看出筛掉了多少）。
  *
  * 0 或者还没搜过（undefined）时返回空串，徽标不显示。
  */
 const totalCountText = computed(() => {
   const n = props.totalImages
   if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return ''
-  if (n < 10000) return String(n)
-  if (n < 1000000) return `${(n / 10000).toFixed(1).replace(/\.0$/, '')}万`
-  return `${Math.round(n / 10000)}万`
+  return String(n)
 })
 
 const expandedOriginal = computed(() => props.expandedOriginal ?? 0)
@@ -1041,13 +1038,20 @@ onBeforeUnmount(() => {
           @click.stop="toggleTagCountPanel"
         >
           <Hash class="w-5 h-5" />
-          <!-- 当前查询命中总数。
-               放左上角，避免与右上角的 tag-count-badge
-               （标签数量筛选范围，如 "2-5"）重叠。 -->
+          <!-- 当前查询命中总数：固定在按钮**底端**，显示完整数字。
+               
+               放底端而不是角标，是为了腾出空间放完整数字：
+               56px 按钮的角落塞不下 "458441"，而底端是一条横条，
+               宽度够、也不挡右上角的筛选范围徽标。
+               
+               高度固定（h-3.5 = 14px），数字变长只影响宽度，
+               不会把按钮撑变形。 -->
           <span
             id="total-count-badge"
             :class="[
-              'absolute -top-1 -left-1 bg-slate-700 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap',
+              'absolute -bottom-1.5 left-1/2 -translate-x-1/2 h-3.5 min-w-[2rem] flex items-center justify-center',
+              'bg-slate-700 text-white text-[9px] font-bold px-1 rounded-full whitespace-nowrap leading-none',
+              'shadow-sm pointer-events-none',
               totalCountText ? '' : 'hidden'
             ]"
             :title="`当前查询共 ${totalImages ?? 0} 张`"
