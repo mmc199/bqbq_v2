@@ -63,15 +63,17 @@ def make(color):
 
 colors = [(240, 180, 60), (90, 200, 120), (100, 150, 240),
           (240, 120, 160), (160, 130, 240), (200, 200, 200)]
+GIF = "\x00gif"
+# 标记放在整个 label 最前面（与 commands.py 的构造方式一致）
 labels = [
-    "1.jpg", "2.jpg", "3.jpg",
-    "4.gif.可爱", "5.png", "6.jpg.长崎素世、长期素食",
+    "1", "2", GIF + "3.可爱",
+    GIF + "4", "5", GIF + "6.长崎素世、长期素食",
 ]
 pairs = [(make(c), lb) for c, lb in zip(colors, labels)]
 
 out = stitch(pairs, header="找到 6 张", footer="获取原图：直接发编号（如 1 2 3）")
 if out:
-    path = r"C:\000soft\qqpy机器人-git\bqbq_v2\docs\preview-label-test.png"
+    path = r"C:\000soft\qqpy机器人-git\bqbq_v2\docs\preview-label-test2.jpg"
     open(path, "wb").write(out)
     img = PILImage.open(io.BytesIO(out))
     print(f"OK 已生成 {path}")
