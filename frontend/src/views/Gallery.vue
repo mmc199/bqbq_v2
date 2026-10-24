@@ -825,6 +825,7 @@ onMounted(() => {
       :expanded-original="originalTagsCount"
       :expanded-total="expandedTagsCount"
       :is-uploading="isUploading"
+      :total-images="totalImages"
       @upload="triggerUpload"
       @export="handleExport"
       @import="handleImport"

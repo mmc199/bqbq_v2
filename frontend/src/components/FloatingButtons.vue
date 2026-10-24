@@ -36,6 +36,8 @@ const props = defineProps<{
   expandedOriginal?: number
   expandedTotal?: number
   isUploading?: boolean
+  /** 当前查询命中总数（由 Gallery 的搜索结果 total 提供）。 */
+  totalImages?: number
 }>()
 
 const emit = defineEmits<{
@@ -268,6 +270,25 @@ const normalizedMaxPayload = computed<number | null>(() =>
 )
 const isTagRangeApplied = computed(() => appliedMin.value > 0 || appliedMax.value >= 0)
 const appliedRangeText = computed(() => `${appliedMin.value}-${appliedMax.value < 0 ? INFINITY_DISPLAY : appliedMax.value}`)
+
+/**
+ * 当前查询命中总数的徽标文字。
+ *
+ * 【为什么压缩大数】徽标只有 56px 按钮的角落那么点地方，
+ * 45 万这种 6 位数直接写会撑破布局，所以：
+ *   9999 以下   原样显示
+ *   1 万以上    显示 "1.2万"
+ *   100 万以上  显示 "123万"
+ *
+ * 0 或者还没搜过（undefined）时返回空串，徽标不显示。
+ */
+const totalCountText = computed(() => {
+  const n = props.totalImages
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return ''
+  if (n < 10000) return String(n)
+  if (n < 1000000) return `${(n / 10000).toFixed(1).replace(/\.0$/, '')}万`
+  return `${Math.round(n / 10000)}万`
+})
 
 const expandedOriginal = computed(() => props.expandedOriginal ?? 0)
 const expandedTotal = computed(() => props.expandedTotal ?? 0)
@@ -1020,6 +1041,19 @@ onBeforeUnmount(() => {
           @click.stop="toggleTagCountPanel"
         >
           <Hash class="w-5 h-5" />
+          <!-- 当前查询命中总数。
+               放左上角，避免与右上角的 tag-count-badge
+               （标签数量筛选范围，如 "2-5"）重叠。 -->
+          <span
+            id="total-count-badge"
+            :class="[
+              'absolute -top-1 -left-1 bg-slate-700 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap',
+              totalCountText ? '' : 'hidden'
+            ]"
+            :title="`当前查询共 ${totalImages ?? 0} 张`"
+          >
+            {{ totalCountText }}
+          </span>
           <span
             id="tag-count-badge"
             :class="[
